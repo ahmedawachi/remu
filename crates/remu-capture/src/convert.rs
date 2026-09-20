@@ -103,33 +103,25 @@ pub(crate) fn to_bgra8(
 }
 
 fn convert_row(src: &[u8], dst: &mut [u8], layout: PixelLayout) {
+    // `as_chunks` rather than `chunks_exact`: the pixel width is known at
+    // compile time, so each element is a fixed-size array and the indexing
+    // below carries no bounds check. This runs once per row of every captured
+    // frame, so it is worth the extra few lines.
+    fn map<const N: usize>(src: &[u8], dst: &mut [u8], f: impl Fn(&[u8; N]) -> [u8; 4]) {
+        let (src, _) = src.as_chunks::<N>();
+        let (dst, _) = dst.as_chunks_mut::<4>();
+        for (s, d) in src.iter().zip(dst.iter_mut()) {
+            *d = f(s);
+        }
+    }
+
     match layout {
         PixelLayout::Bgra => dst.copy_from_slice(src),
-        PixelLayout::Bgrx => {
-            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
-                d.copy_from_slice(&[s[0], s[1], s[2], 0xFF]);
-            }
-        }
-        PixelLayout::Rgbx => {
-            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
-                d.copy_from_slice(&[s[2], s[1], s[0], 0xFF]);
-            }
-        }
-        PixelLayout::Xbgr => {
-            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
-                d.copy_from_slice(&[s[1], s[2], s[3], 0xFF]);
-            }
-        }
-        PixelLayout::Rgb => {
-            for (s, d) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
-                d.copy_from_slice(&[s[2], s[1], s[0], 0xFF]);
-            }
-        }
-        PixelLayout::Bgr => {
-            for (s, d) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
-                d.copy_from_slice(&[s[0], s[1], s[2], 0xFF]);
-            }
-        }
+        PixelLayout::Bgrx => map::<4>(src, dst, |s| [s[0], s[1], s[2], 0xFF]),
+        PixelLayout::Rgbx => map::<4>(src, dst, |s| [s[2], s[1], s[0], 0xFF]),
+        PixelLayout::Xbgr => map::<4>(src, dst, |s| [s[1], s[2], s[3], 0xFF]),
+        PixelLayout::Rgb => map::<3>(src, dst, |s| [s[2], s[1], s[0], 0xFF]),
+        PixelLayout::Bgr => map::<3>(src, dst, |s| [s[0], s[1], s[2], 0xFF]),
     }
 }
 
@@ -362,7 +354,7 @@ mod tests {
         assert_eq!(frame.stride, 8);
         assert_eq!(&frame.data[0..4], &[0, 0, 0, 0xFF]);
         assert_eq!(&frame.data[12..16], &[255, 255, 255, 0xFF]);
-        for px in frame.data.chunks_exact(4) {
+        for px in frame.data.as_chunks::<4>().0 {
             assert_eq!(px[0], px[1], "neutral chroma means grey");
             assert_eq!(px[1], px[2], "neutral chroma means grey");
         }

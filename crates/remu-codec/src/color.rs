@@ -155,7 +155,7 @@ pub fn bgra_to_i420(
     for row in 0..h {
         let src = &bgra[row * stride..row * stride + min_stride];
         let dst = &mut out.y[row * w..row * w + w];
-        for (px, y) in src.chunks_exact(4).zip(dst.iter_mut()) {
+        for (px, y) in src.as_chunks::<4>().0.iter().zip(dst.iter_mut()) {
             *y = rgb_to_y(i32::from(px[2]), i32::from(px[1]), i32::from(px[0]));
         }
     }
@@ -241,7 +241,7 @@ pub fn i420_to_rgba(
         let v_row = &v[c_row * sv..c_row * sv + cw];
         let dst = &mut out[row * w * 4..(row + 1) * w * 4];
 
-        for (col, px) in dst.chunks_exact_mut(4).enumerate() {
+        for (col, px) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             // BT.601 limited-range inverse, same fixed-point scale as above.
             let c = i32::from(y_row[col]) - 16;
             let d = i32::from(u_row[col / 2]) - 128;
@@ -446,7 +446,7 @@ mod tests {
         let mut worst = 0i32;
         let mut total = 0i64;
         let mut count = 0i64;
-        for (src_px, out_px) in src.chunks_exact(4).zip(rgba.chunks_exact(4)) {
+        for (src_px, out_px) in src.as_chunks::<4>().0.iter().zip(rgba.as_chunks::<4>().0) {
             // BGRA in, RGBA out: the channel order swap is part of what is
             // being asserted here.
             for (s, o) in [
@@ -488,7 +488,7 @@ mod tests {
             let src = solid(4, 4, rgb);
             bgra_to_i420(&src, 4, 4, 16, &mut yuv).unwrap();
             i420_to_rgba(yuv.y(), yuv.u(), yuv.v(), yuv.strides(), 4, 4, &mut rgba).unwrap();
-            for px in rgba.chunks_exact(4) {
+            for px in rgba.as_chunks::<4>().0 {
                 for (c, want) in px[..3].iter().zip(rgb.iter()) {
                     let delta = (i32::from(*c) - i32::from(*want)).abs();
                     assert!(delta <= 5, "{rgb:?} came back {px:?} (delta {delta})");
@@ -613,7 +613,7 @@ mod tests {
         let uv = vec![128u8; 4];
         i420_to_rgba(&y, &uv, &uv, (4, 2, 2), 4, 4, &mut out).unwrap();
         assert_eq!(out.len(), 4 * 4 * 4);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert!(
                 px[0] > 250 && px[1] > 250 && px[2] > 250,
                 "white expected, got {px:?}"
@@ -630,7 +630,7 @@ mod tests {
         let v = vec![255u8; 1];
         let mut out = Vec::new();
         i420_to_rgba(&y, &u, &v, (2, 1, 1), 2, 2, &mut out).unwrap();
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px[0], 255);
             assert_eq!(px[2], 255);
         }
@@ -638,7 +638,7 @@ mod tests {
         // And the opposite end: negative luma with extreme chroma clamps to 0.
         let y = vec![0u8; 4];
         i420_to_rgba(&y, &[0; 1], &[0; 1], (2, 1, 1), 2, 2, &mut out).unwrap();
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px[0], 0);
             assert_eq!(px[2], 0);
         }

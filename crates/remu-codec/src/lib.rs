@@ -175,7 +175,12 @@ mod tests {
     fn mean_abs_error(bgra: &[u8], decoded: &DecodedFrame) -> f64 {
         let mut total = 0u64;
         let mut count = 0u64;
-        for (src, out) in bgra.chunks_exact(4).zip(decoded.rgba.chunks_exact(4)) {
+        for (src, out) in bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(decoded.rgba.as_chunks::<4>().0)
+        {
             for (s, o) in [(src[2], out[0]), (src[1], out[1]), (src[0], out[2])] {
                 total += u64::from(s.abs_diff(o));
                 count += 1;
@@ -212,7 +217,7 @@ mod tests {
             mae < 12.0,
             "mean absolute error {mae} — picture is not the input"
         );
-        assert!(frame.rgba.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(frame.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
     }
 
     #[test]

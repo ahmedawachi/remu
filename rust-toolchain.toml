@@ -1,3 +1,6 @@
+# Pinned, not "stable": a new stable release can add a clippy lint that turns
+# CI red without anyone changing a line of code. Bump this deliberately, with
+# the lint fixes in the same commit.
 [toolchain]
-channel = "stable"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]

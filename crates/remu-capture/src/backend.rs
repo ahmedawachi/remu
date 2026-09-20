@@ -27,7 +27,9 @@ use scap::capturer::{Options, Resolution};
 use scap::frame::{Frame as ScapFrame, FrameType};
 
 use crate::convert::{nv12_to_bgra8, to_bgra8, PixelLayout};
-use crate::ids::{format_display_id, parse_display_id};
+use crate::ids::format_display_id;
+#[cfg(not(target_os = "linux"))]
+use crate::ids::parse_display_id;
 use crate::{CaptureError, CaptureOptions, DisplayTarget, Frame, ScreenCapturer};
 
 /// How long the worker sleeps between checks of the stop flag when no frames

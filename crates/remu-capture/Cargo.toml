@@ -14,3 +14,10 @@ scap = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+# scap 0.0.8 declares `windows-capture = "1.3.6"`, but 1.5.0 changed
+# `WCSettings::new` from five parameters to eight inside the 1.x line. Cargo
+# resolves the caret to 1.5.0 and scap then fails to compile, so Windows builds
+# break through no fault of ours. Pinned until scap releases against 1.5.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "=1.4.4"
