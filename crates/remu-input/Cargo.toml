@@ -1,0 +1,18 @@
+[package]
+name = "remu-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Remote input injection and OS permission checks for Remu."
+
+[dependencies]
+remu-proto = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+enigo = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The screen-recording permission is a Core Graphics preflight; this crate's
+# `access` module wraps it safely, which keeps remu-input free of unsafe.
+core-graphics = "0.25"

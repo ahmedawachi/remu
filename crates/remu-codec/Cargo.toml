@@ -1,0 +1,12 @@
+[package]
+name = "remu-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "H.264 encode/decode and colour conversion for Remu."
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+openh264 = { workspace = true }

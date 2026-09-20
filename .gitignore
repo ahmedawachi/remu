@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local config that must never be committed: it can hold a relay token
+# and an unattended-access password.
+/.env
+*.local.toml

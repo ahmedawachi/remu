@@ -1,0 +1,89 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/remu-app/remu"
+authors = ["The Remu contributors"]
+
+[workspace.dependencies]
+remu-proto = { path = "crates/remu-proto" }
+remu-capture = { path = "crates/remu-capture" }
+remu-codec = { path = "crates/remu-codec" }
+remu-input = { path = "crates/remu-input" }
+remu-session = { path = "crates/remu-session" }
+
+# --- serialization / errors ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+hex = "0.4"
+
+# --- async runtime / network ---
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+axum = { version = "0.8", features = ["ws"] }
+webrtc = "0.21"
+
+# --- crypto ---
+# sha2 0.10 / hmac 0.12: the long-stable RustCrypto API. Do not bump to
+# sha2 0.11 / hmac 0.13 without updating every call site — digest 0.11
+# renamed the traits these crates re-export.
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.8"
+
+# --- media ---
+scap = "0.0.8"
+openh264 = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# --- desktop integration ---
+enigo = "0.6"
+arboard = "3.6"
+rfd = "0.17"
+directories = "6"
+
+# --- gui ---
+eframe = { version = "0.35", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "wayland",
+    "x11",
+] }
+egui = "0.35"
+egui_extras = { version = "0.35", features = ["image"] }
+
+# --- utility ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+clap = { version = "4", features = ["derive", "env"] }
+bytemuck = "1"
+
+[profile.release]
+# A remote-desktop client lives or dies on frame latency: fat LTO plus a single
+# codegen unit measurably tightens the capture -> encode -> send loop, and the
+# longer build is paid once per release rather than per frame.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+# The media path is unusably slow in a debug build, so optimize dependencies
+# (openh264, scap, webrtc) even in dev while keeping our own crates debuggable.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

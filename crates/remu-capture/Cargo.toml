@@ -1,0 +1,16 @@
+[package]
+name = "remu-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-platform screen capture for Remu."
+
+[dependencies]
+remu-proto = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+scap = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

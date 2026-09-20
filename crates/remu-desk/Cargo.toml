@@ -1,0 +1,38 @@
+[package]
+name = "remu-desk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Remu desk application — the remote-desktop client."
+
+[[bin]]
+name = "remu"
+path = "src/main.rs"
+
+[dependencies]
+remu-proto = { workspace = true }
+remu-session = { workspace = true }
+remu-capture = { workspace = true }
+remu-codec = { workspace = true }
+tokio = { workspace = true }
+crossbeam-channel = { workspace = true }
+bytes = { workspace = true }
+rfd = { workspace = true }
+remu-input = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+directories = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+keyring = { version = "4.2.0", features = ["apple-native-keyring-store", "windows-native-keyring-store"] }
+
+[dev-dependencies]
+remu-relay = { path = "../remu-relay" }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+egui_kittest = { version = "0.35.0", features = ["snapshot", "wgpu"] }

@@ -1,0 +1,43 @@
+[package]
+name = "remu-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Relay signalling client and WebRTC peer session for Remu."
+
+[dependencies]
+remu-proto = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+webrtc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+
+# webrtc 0.21 is a thin async shell over the sans-I/O `rtc` core and re-exports
+# only part of it: the media `Sample`, the H.264 depacketizer and the codec
+# parameter structs are reachable only from `rtc` itself, so it is a direct
+# dependency here too. Pinned to the same 0.21 line as `webrtc`, and with
+# default features off so the crypto provider stays whatever `webrtc` selects
+# rather than being chosen twice.
+rtc = { version = "0.21", default-features = false }
+# Required to implement webrtc's `PeerConnectionEventHandler`, whose methods are
+# async; the trait is declared with `#[async_trait::async_trait]`.
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
+# Receiver tests need a real directory on a real filesystem: the rename, the
+# name-collision walk and the removal of a partial download are all filesystem
+# behaviour, and mocking them would test the mock.
+tempfile = "3"
