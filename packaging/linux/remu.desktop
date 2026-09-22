@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Remu
+GenericName=Remote Desktop
+Comment=Share your screen and control another machine, peer to peer
+Exec=remu
+Icon=dev.remu.desk
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;screen;share;control;support;
+StartupNotify=true
+# Wayland matches a window to this file by app id, so the file has to be
+# installed as dev.remu.desk.desktop. X11 has no app id: winit falls back to
+# argv[0], which makes the window class the binary name instead.
+StartupWMClass=remu

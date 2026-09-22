@@ -1,0 +1,404 @@
+name: release
+
+# A tag push builds and drafts a release. The manual run builds the same
+# artefacts and publishes nothing, so packaging can be exercised without
+# spending a version number. It takes no inputs on purpose: there is no switch
+# that promotes a manual run to a release, because tagging and releasing belong
+# to the repository owner and a draft is as far as automation may go.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # As in ci.yml, RUSTFLAGS is deliberately not set globally: it applies to
+  # dependencies as well as our own crates. The Windows job sets it for a
+  # reason that has nothing to do with lints, and says so there.
+
+# A second tag arriving must not cancel the build someone is waiting on.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every artefact name carries the version, so a tag that disagrees with
+      # the workspace manifest would ship files whose names are a lie. Read
+      # Cargo.toml directly instead of asking `cargo metadata`, which would
+      # download a whole toolchain to answer one question.
+      - id: resolve
+        name: Resolve the version being built
+        run: |
+          set -euo pipefail
+          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ -n "$manifest" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+          if [ "${{ github.event_name }}" = push ]; then
+            tag=${GITHUB_REF_NAME#v}
+            if [ "$tag" != "$manifest" ]; then
+              echo "tag $GITHUB_REF_NAME disagrees with Cargo.toml ($manifest)" >&2
+              exit 1
+            fi
+            echo "version=$tag" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$manifest-dev.${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    # A cold fat-LTO build of this graph is around half an hour per platform.
+    # Three times that is a hung runner, not a slow one.
+    timeout-minutes: 90
+    strategy:
+      # One platform's compiler or packaging failing must not throw away the
+      # other two artefacts; the draft release is where a gap gets noticed.
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest is Apple silicon and cross-compiles the Intel half
+          # natively, so one job produces the universal binary. Two jobs plus a
+          # merge job would compile exactly as much code, then pay an artefact
+          # round-trip to put the halves back together. The runner's OS version
+          # does not leak into the result: MACOSX_DEPLOYMENT_TARGET sets the
+          # floor, not the SDK.
+          - name: macos-universal
+            os: macos-latest
+          # Pinned to 22.04 rather than ubuntu-latest, and this is the whole
+          # point of the job: glibc is forward-compatible only. A binary linked
+          # against 24.04's glibc 2.39 refuses to start on a 22.04 desktop,
+          # which is most of the machines this will be downloaded onto.
+          - name: linux-x86_64
+            os: ubuntu-22.04
+          - name: windows-x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No toolchain action, for the reason ci.yml gives: rust-toolchain.toml
+      # pins the compiler and rustup honours it, so a release is built with the
+      # same compiler that passed CI.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
+
+      # `rustup target add` applies to the toolchain that is *active in this
+      # directory*, which rust-toolchain.toml overrides to the pinned version.
+      # Both standard libraries therefore come from the pin, not from whatever
+      # `stable` the runner image happens to ship. The step above has already
+      # run a cargo proxy, so the pinned toolchain exists to add a target to.
+      - name: Add the second Apple target
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # A key of its own per platform: this job compiles the release
+          # profile, and on Windows with different RUSTFLAGS, so sharing ci.yml's
+          # cache would only ever miss.
+          shared-key: release-${{ matrix.name }}
+          # Restored by every run, written only by manual ones. What gets
+          # published is therefore never built on top of artefacts that only a
+          # release run produced, and the dry run — where packaging scripts are
+          # actually iterated on — is the thing that keeps the cache warm.
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          # A packaging failure after a 20-minute compile should not throw the
+          # compile away.
+          cache-on-failure: true
+
+      # Identical to ci.yml's list on purpose: a release must not be the first
+      # place a missing build dependency is discovered.
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb1-dev libxrandr-dev libxi-dev libxtst-dev \
+            libgtk-3-dev libxkbcommon-dev libssl-dev \
+            libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev \
+            patchelf desktop-file-utils
+          # Beyond ci.yml's list: appimage.sh refuses to run without patchelf,
+          # which it uses to point the tarball's binary at its own lib
+          # directory, and it validates the desktop entry when the validator is
+          # present. Neither is on the runner image by default.
+
+      # Only the two shipping binaries, not --workspace: nothing downstream
+      # wants the test-only crates' dependency tree compiled under fat LTO.
+      - name: Build both Apple architectures
+        if: runner.os == 'macOS'
+        env:
+          # The minimum macOS that will load the binary. 12.3 is not a guess:
+          # ScreenCaptureKit arrived there, and capture is the application.
+          MACOSX_DEPLOYMENT_TARGET: "12.3"
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p remu-desk -p remu-relay
+          cargo build --release --target x86_64-apple-darwin -p remu-desk -p remu-relay
+
+      - name: Build
+        if: runner.os == 'Linux'
+        run: cargo build --release -p remu-desk -p remu-relay
+
+      - name: Build
+        if: runner.os == 'Windows'
+        env:
+          # Static CRT: a portable zip has to run on a machine that has never
+          # installed a Visual C++ redistributable. The `cc` crate reads this
+          # flag too, so openh264's C++ and ring's C land on the same runtime.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p remu-desk -p remu-relay
+
+      # lipo, the .app tree, Info.plist, the icon, and the signature. Signing is
+      # the script's decision: with MACOS_SIGNING_IDENTITY it imports the
+      # certificate and notarises, without it the bundle is ad-hoc signed —
+      # which is not optional, since the kernel will not execute an unsigned
+      # arm64 binary at all.
+      - name: Package
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./packaging/macos/bundle.sh
+
+      - name: Package the AppImage
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          # appimagetool mounts itself with FUSE, which hosted runners do not
+          # have. This makes it unpack to a temporary directory instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: ./packaging/linux/appimage.sh
+
+      # No separate tarball step: appimage.sh already emits the portable
+      # tarball — with the relay beside the desk binary and an rpath that finds
+      # the bundled libraries — and it wipes dist/ on the way in, so a step
+      # writing there first would lose its output anyway.
+
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $desk  = "remu-$env:VERSION-windows-x86_64"
+          $relay = "remu-relay-$env:VERSION-windows-x86_64"
+          # Staged outside the checkout so nothing here can be mistaken for
+          # source, and so a re-run starts from a clean directory.
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          New-Item -ItemType Directory -Force -Path dist, "$stage/$desk", "$stage/$relay" | Out-Null
+          Copy-Item target/release/remu.exe "$stage/$desk/"
+          Copy-Item target/release/remu-relay.exe "$stage/$relay/"
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE "$stage/$desk/"
+          Copy-Item LICENSE-MIT, LICENSE-APACHE "$stage/$relay/"
+
+          # Signing only removes a SmartScreen click-through; with no
+          # certificate the binaries still run, and the release notes say how.
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $signtool = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/signtool.exe' |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw 'signtool.exe not found on this runner' }
+            # A timestamp is what keeps the signature valid after the
+            # certificate itself expires.
+            & $signtool.FullName sign /fd SHA256 /td SHA256 `
+              /tr http://timestamp.digicert.com `
+              /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD `
+              "$stage/$desk/remu.exe" "$stage/$relay/remu-relay.exe"
+            if ($LASTEXITCODE -ne 0) { throw 'signtool failed' }
+            Remove-Item $pfx -Force
+          } else {
+            Write-Host 'No certificate configured: shipping unsigned binaries.'
+          }
+
+          # No trailing wildcard, deliberately: that puts the named folder at
+          # the root of the zip, so extracting leaves one directory instead of
+          # scattering an exe and two licences into Downloads.
+          Compress-Archive -Path "$stage/$desk"  -DestinationPath "dist/$desk.zip"
+          Compress-Archive -Path "$stage/$relay" -DestinationPath "dist/$relay.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          # An empty artefact that fails three steps later, in another job, is
+          # the worst way to learn that a packaging script moved its output.
+          if-no-files-found: error
+          # Everything in dist is already a compressed archive.
+          compression-level: 0
+
+  collect:
+    name: checksums
+    needs: build
+    # Runs even when a platform failed, so the artefacts that did build are
+    # still downloadable and still checksummed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksum every artefact
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -l
+          [ -n "$(ls -A)" ] || { echo "nothing was built" >&2; exit 1; }
+          # Bare filenames only, so `sha256sum -c` works in whatever directory
+          # the file was downloaded into. Written outside dist first: a redirect
+          # into the directory being globbed can list the sums file in itself.
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+
+      # Optional, and the reason it exists: until the binaries themselves are
+      # signed, a signature over the checksums is the only way a downloader can
+      # tell a tampered mirror from a real release.
+      - name: Sign the checksums when a key is configured
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "No signing key configured: shipping bare checksums."
+            exit 0
+          fi
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "${GPG_PASSPHRASE:-}" \
+            --armor --detach-sign --output dist/SHA256SUMS.asc dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.asc
+          if-no-files-found: error
+
+  publish:
+    name: draft release
+    needs: [prepare, collect]
+    # Never on a manual run, and never for a ref that is not a v-tag. A manual
+    # run pointed at a tag still refuses, because the event is what decides.
+    if: ${{ !cancelled() && needs.collect.result == 'success' && needs.prepare.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    # The only job in this file that can write to the repository, and it
+    # compiles nothing.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # What the release page has to say for an unsigned download to be usable
+      # by someone who has never seen a terminal. The changelog is not written
+      # here: the draft is the owner's to complete, and GitHub's "Generate
+      # release notes" button appends it in one click.
+      - name: Write the install notes
+        run: |
+          cat > notes.md <<'NOTES'
+          ## Download
+
+          | Machine | File |
+          |---|---|
+          | macOS, Apple silicon or Intel | the `macos-universal.dmg` |
+          | Windows 10 or 11, 64-bit | the `windows-x86_64.zip` |
+          | Linux, 64-bit | the `.AppImage` |
+
+          No installer, no admin rights, and nothing to install first.
+
+          **macOS** — open the disk image, drag `Remu.app` into Applications, open it
+          from there. These builds
+          carry no Apple developer signature, so the first launch is refused: open
+          **System Settings → Privacy & Security**, find the line about Remu near the
+          bottom, click **Open Anyway**, and launch it again. Remu then needs **Screen
+          Recording** and **Accessibility** in that same panel, and has to be relaunched
+          after you grant them. If you would rather not click through it:
+
+          ```
+          xattr -dr com.apple.quarantine /Applications/Remu.app
+          ```
+
+          **Windows** — unzip anywhere and run `remu.exe`. SmartScreen will say "Windows
+          protected your PC" the first time: **More info → Run anyway**.
+
+          **Linux** — make it executable and run it:
+
+          ```
+          chmod +x Remu-*.AppImage && ./Remu-*.AppImage
+          ```
+
+          If your distribution has no FUSE, add `--appimage-extract-and-run`. The
+          `x86_64-linux.tar.gz` holds the same binary outside the bundle, for anyone
+          whose distribution fights AppImages. Either way the machine needs a GL or
+          Vulkan driver, pipewire and dbus — deliberately not bundled, because a copy
+          of those inside the download would override the ones your system is using.
+
+          On Wayland you can share your screen but cannot be controlled: the
+          compositor blocks synthetic input. Log into an X11 session if someone needs
+          to drive your machine.
+
+          **Hosting a relay** — one person on the network runs `remu-relay`; everyone
+          else just needs the address it prints. It is in the `remu-relay-*` archive on
+          macOS and Windows, and beside `remu` inside the Linux tarball. Read the relay
+          section of the README first: one reachable from the internet without a token
+          is an open directory of reachable desks.
+
+          ## Verify what you downloaded
+
+          `SHA256SUMS` covers every file here.
+
+          ```
+          shasum -a 256 -c SHA256SUMS   # macOS
+          sha256sum -c SHA256SUMS       # Linux
+          ```
+          NOTES
+
+      # gh, not a third-party action: it is already on the runner, and the token
+      # that can write releases stays out of code nobody here reviews.
+      # --draft because publishing is the owner's decision, never this file's.
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Idempotent: a re-run after a fixed packaging script re-uploads into
+          # the draft that already exists instead of failing on it.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --title "Remu $VERSION" \
+            --notes-file notes.md
+          gh release upload "$TAG" dist/* --clobber
+          gh release view "$TAG" --json url --jq .url

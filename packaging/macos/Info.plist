@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Remu.app's property list. packaging/macos/bundle.sh copies this into the
+  bundle and rewrites the two version keys from the workspace version, so the
+  values below are what a hand-assembled bundle gets, not the release truth.
+
+  There is no usage-description string for screen recording or accessibility
+  because macOS has no such key for either: both alerts are worded by the
+  system, and no Info.plist entry can change them or pre-request them. What
+  those two permissions do need is this bundle. TCC stores a grant against an
+  application identity — bundle identifier plus code signature — so a signed
+  bundle keeps its grant, while a bare binary launched from a terminal has no
+  identity of its own and the grant lands on the terminal instead.
+
+  Local Network is the opposite case: it is honoured from macOS 15 on, and Remu
+  trips it the first time WebRTC tries a direct route to a peer on the same
+  network, so the string is here to explain that before the alert appears.
+
+  LSMinimumSystemVersion tracks ScreenCaptureKit (macOS 12.3), which the capture
+  backend is built on; below that the app has nothing to capture with.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Remu</string>
+	<key>CFBundleExecutable</key>
+	<string>remu</string>
+	<key>CFBundleIconFile</key>
+	<string>Remu</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.remu.desk</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Remu</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.3</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Remu connects straight to the other machine when it is on the same network. Without this the session has to travel through a relay, which is slower.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSRequiresAquaSystemAppearance</key>
+	<false/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
