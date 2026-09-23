@@ -96,12 +96,14 @@ jobs:
           # floor, not the SDK.
           - name: macos-universal
             os: macos-latest
-          # Pinned to 22.04 rather than ubuntu-latest, and this is the whole
-          # point of the job: glibc is forward-compatible only. A binary linked
-          # against 24.04's glibc 2.39 refuses to start on a 22.04 desktop,
-          # which is most of the machines this will be downloaded onto.
+          # Pinned, not ubuntu-latest: glibc is forward-compatible only, so the
+          # runner's glibc becomes the oldest one the download can start on,
+          # and that must not move when GitHub re-points a label. 24.04 and
+          # not older, because it is the oldest Ubuntu this dependency graph
+          # compiles on: scap's libspa 0.8 bindings need PipeWire headers
+          # newer than 22.04's 0.3.48, and fail to build against them.
           - name: linux-x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
           - name: windows-x86_64
             os: windows-latest
     steps:
@@ -150,11 +152,13 @@ jobs:
             libxcb1-dev libxrandr-dev libxi-dev libxtst-dev \
             libgtk-3-dev libxkbcommon-dev libssl-dev \
             libpipewire-0.3-dev libspa-0.2-dev clang libclang-dev \
-            patchelf desktop-file-utils
+            patchelf desktop-file-utils libxkbcommon-x11-dev
           # Beyond ci.yml's list: appimage.sh refuses to run without patchelf,
           # which it uses to point the tarball's binary at its own lib
           # directory, and it validates the desktop entry when the validator is
-          # present. Neither is on the runner image by default.
+          # present. libxkbcommon-x11 is the half of xkbcommon winit dlopens:
+          # the script bundles it beside libxkbcommon and refuses to ship one
+          # without the other, because the two must come from the same build.
 
       # Only the two shipping binaries, not --workspace: nothing downstream
       # wants the test-only crates' dependency tree compiled under fat LTO.
@@ -448,9 +452,11 @@ jobs:
 
           If your distribution has no FUSE, add `--appimage-extract-and-run`. The
           `x86_64-linux.tar.gz` holds the same binary outside the bundle, for anyone
-          whose distribution fights AppImages. Either way the machine needs a GL or
-          Vulkan driver, pipewire and dbus — deliberately not bundled, because a copy
-          of those inside the download would override the ones your system is using.
+          whose distribution fights AppImages. Either way the machine needs Ubuntu
+          24.04, Debian 13 or Fedora 40 or newer (or a current Arch), plus a GL or
+          Vulkan driver, pipewire and dbus — the last three deliberately not bundled,
+          because a copy inside the download would override the ones your system is
+          using.
 
           On Wayland you can share your screen but cannot be controlled: the
           compositor blocks synthetic input. Log into an X11 session if someone needs

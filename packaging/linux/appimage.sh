@@ -7,7 +7,7 @@
 #   SHA256SUMS-linux-<arch>.txt
 #
 # Run it on the oldest glibc the release supports — the release workflow does
-# that on an ubuntu-22.04 runner — not on whatever machine is handy. A
+# that on an ubuntu-24.04 runner — not on whatever machine is handy. A
 # binary's glibc floor is whatever it was linked against, and a floor above
 # GLIBC_MAX means the user sees "GLIBC_2.39 not found" instead of a window, so
 # the check before packaging refuses to ship it.
@@ -45,13 +45,16 @@ STAGE="$WORK_DIR/stage"
 # are re-verified against their digests whether they were just fetched or not.
 TOOLS="$REPO_ROOT/target/appimage-tools"
 
-# The highest glibc symbol version the binaries may require. 2.35 is Ubuntu
-# 22.04, which also clears Debian 12, Fedora 36+, Mint 21+ and Arch. Raise it
-# only together with a decision about who stops being able to run this.
-GLIBC_MAX="${GLIBC_MAX:-2.35}"
-# The same floor for libstdc++, which the host provides too: 3.4.30 is the
-# runtime Ubuntu 22.04 ships (GCC 12), and it clears the same distributions.
-GLIBCXX_MAX="${GLIBCXX_MAX:-3.4.30}"
+# The highest glibc symbol version the binaries may require. 2.39 is Ubuntu
+# 24.04, which also clears Debian 13, Fedora 40+, Mint 22+ and Arch. It is
+# not lower because it cannot be: scap's libspa 0.8 bindings need PipeWire
+# headers newer than Ubuntu 22.04 ships, so nothing older builds this graph.
+# Raise it only together with a decision about who stops being able to run it.
+GLIBC_MAX="${GLIBC_MAX:-2.39}"
+# The same floor for libstdc++, which the host provides too: 3.4.32 is GCC 13,
+# Ubuntu 24.04's default compiler, and every distribution at the glibc floor
+# ships at least that runtime.
+GLIBCXX_MAX="${GLIBCXX_MAX:-3.4.32}"
 
 # linuxdeploy publishes a rolling "continuous" tag as well as dated ones. The
 # dated tags are used here because a release built next month has to be the
@@ -148,7 +151,11 @@ xkb_x11="$(ldconfig -p 2>/dev/null | awk '/libxkbcommon-x11\.so\.0/ {print $NF; 
 if [ -n "$xkb_x11" ] && [ -e "$xkb_x11" ]; then
     library_args+=(--library "$xkb_x11")
 else
-    warn "libxkbcommon-x11.so.0 was not found here; X11 keyboard input will depend on the user's copy"
+    # Not a warning: shipping the bundled libxkbcommon without its X11 half
+    # makes winit dlopen the user's libxkbcommon-x11, which then binds to our
+    # libxkbcommon — two builds of one library in one process.
+    die "libxkbcommon-x11.so.0 is not installed here, and the bundle must carry it beside libxkbcommon.
+Debian/Ubuntu: apt install libxkbcommon-x11-dev"
 fi
 
 # ----------------------------------------------------------------- tools -----
@@ -232,7 +239,7 @@ done
 printf '\n  glibc floor: %s (limit %s)\n' "${floor:-unknown}" "$GLIBC_MAX"
 if [ -n "$floor" ] && [ "$(printf '%s\n%s\n' "$floor" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
     die "these binaries need glibc $floor, above the $GLIBC_MAX this release promises.
-Build on Ubuntu 22.04, as the release workflow does, or raise GLIBC_MAX
+Build on Ubuntu 24.04, as the release workflow does, or raise GLIBC_MAX
 deliberately and say in the release notes which distributions just lost support."
 fi
 
@@ -246,7 +253,7 @@ printf '  libstdc++ floor: GLIBCXX_%s (limit GLIBCXX_%s)\n' "${cxxfloor:-none}" 
 if [ -n "$cxxfloor" ] && [ "$(printf '%s\n%s\n' "$cxxfloor" "$GLIBCXX_MAX" | sort -V | tail -1)" != "$GLIBCXX_MAX" ]; then
     die "these binaries need GLIBCXX_$cxxfloor, above the GLIBCXX_$GLIBCXX_MAX this release promises.
 The C++ compiler is newer than the release's floor: build with the distribution's
-default g++ on Ubuntu 22.04, or raise GLIBCXX_MAX deliberately."
+default g++ on Ubuntu 24.04, or raise GLIBCXX_MAX deliberately."
 fi
 
 # ---------------------------------------------------------------- output -----
