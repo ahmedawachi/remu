@@ -1,13 +1,28 @@
 name: release
 
-# A tag push builds and drafts a release. The manual run builds the same
-# artefacts and publishes nothing, so packaging can be exercised without
-# spending a version number. It takes no inputs on purpose: there is no switch
-# that promotes a manual run to a release, because tagging and releasing belong
-# to the repository owner and a draft is as far as automation may go.
+# A tag push builds and drafts a release. A pull request that touches the
+# packaging, and a manual run, build the same artefacts and publish nothing, so
+# packaging is exercised before a version number is spent on it. ci.yml proves
+# the code compiles on all three platforms; only this proves the download
+# does, and a packaging bug found at tag time is found too late.
+#
+# It takes no inputs on purpose: there is no switch that promotes a dry run to
+# a release, because tagging and releasing belong to the repository owner and
+# a draft is as far as automation may go.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    # A cold fat-LTO build on three runners is not worth spending on a pull
+    # request that cannot change what the artefacts contain.
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - "crates/remu-desk/build.rs"
+      - "crates/*/Cargo.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 permissions:
@@ -19,10 +34,13 @@ env:
   # dependencies as well as our own crates. The Windows job sets it for a
   # reason that has nothing to do with lints, and says so there.
 
-# A second tag arriving must not cancel the build someone is waiting on.
+# A second tag arriving must not cancel the build someone is waiting on. A new
+# push to a pull request should: its dry run is already describing old code,
+# and at half an hour per platform, queueing it behind the next one only makes
+# the answer later.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   prepare:
@@ -121,8 +139,9 @@ jobs:
           # compile away.
           cache-on-failure: true
 
-      # Identical to ci.yml's list on purpose: a release must not be the first
-      # place a missing build dependency is discovered.
+      # ci.yml's list on purpose, so a release is never the first place a
+      # missing build dependency is discovered — plus the two packaging tools
+      # named at the end.
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -186,12 +205,75 @@ jobs:
           # appimagetool mounts itself with FUSE, which hosted runners do not
           # have. This makes it unpack to a temporary directory instead.
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # The binaries the Build step just produced are exactly the ones to
+          # ship; letting the script compile them again costs a second fat-LTO
+          # build and proves nothing.
+          SKIP_BUILD: "1"
+          # The script defaults to target/dist so a local run leaves the
+          # working tree clean; the upload step below reads dist/.
+          OUT_DIR: ${{ github.workspace }}/dist
         run: ./packaging/linux/appimage.sh
 
+      # appimage.sh checks what went into the bundle; this checks the tarball
+      # works once unpacked somewhere else, which is where a wrong rpath shows
+      # up. The desk app needs a display to start, so it is proven only to
+      # resolve every library; the relay is headless and is actually run.
+      - name: Verify the Linux tarball
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          unpack="$RUNNER_TEMP/unpack"
+          rm -rf "$unpack" && mkdir -p "$unpack"
+          tar -xzf dist/remu-*-linux.tar.gz -C "$unpack"
+          dir=$(find "$unpack" -mindepth 1 -maxdepth 1 -type d)
+          ls -la "$dir"
+          if ldd "$dir/remu" | grep 'not found'; then
+            echo "the unpacked remu cannot resolve the libraries above" >&2
+            exit 1
+          fi
+          "$dir/remu-relay" --version
+          test -x dist/Remu-*.AppImage
+
       # No separate tarball step: appimage.sh already emits the portable
-      # tarball — with the relay beside the desk binary and an rpath that finds
-      # the bundled libraries — and it wipes dist/ on the way in, so a step
-      # writing there first would lose its output anyway.
+      # tarball, with the relay beside the desk binary and an rpath that finds
+      # the bundled libraries.
+
+      # Three promises the zip makes that nothing else in this workflow checks,
+      # each of which fails on the user's machine rather than here:
+      #   - no Visual C++ runtime is needed, i.e. +crt-static reached every
+      #     object, openh264's C++ and ring's C included;
+      #   - build.rs embedded the icon and version block, which it would skip
+      #     with only a warning if the resource compiler went missing;
+      #   - the statically linked binaries load at all.
+      - name: Verify the Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found on this runner' }
+
+          foreach ($exe in 'target/release/remu.exe', 'target/release/remu-relay.exe') {
+            $deps = & $dumpbin.FullName /nologo /dependents $exe | Out-String
+            Write-Host "== $exe`n$deps"
+            # A dynamic CRT shows up as the VC runtime plus the UCRT forwarders.
+            if ($deps -match '(?i)vcruntime|msvcp|ucrtbase|api-ms-win-crt') {
+              throw "$exe still links the C runtime dynamically; it would need the VC++ redistributable"
+            }
+          }
+
+          $info = (Get-Item target/release/remu.exe).VersionInfo
+          if ($info.FileDescription -ne 'Remu' -or $info.ProductName -ne 'Remu') {
+            throw "remu.exe is missing its version resource (FileDescription '$($info.FileDescription)')"
+          }
+          Write-Host "remu.exe: $($info.FileDescription) $($info.ProductVersion)"
+
+          & target/release/remu-relay.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'remu-relay.exe does not start' }
 
       - name: Package
         if: runner.os == 'Windows'
@@ -210,6 +292,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist, "$stage/$desk", "$stage/$relay" | Out-Null
           Copy-Item target/release/remu.exe "$stage/$desk/"
           Copy-Item target/release/remu-relay.exe "$stage/$relay/"
+          # The first-run notes sit beside the exe under a name that sorts to
+          # the top, because the firewall prompt they explain is the one step
+          # that decides whether a first session works at all.
+          Copy-Item packaging/windows/README.txt "$stage/$desk/Read Me.txt"
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE "$stage/$desk/"
           Copy-Item LICENSE-MIT, LICENSE-APACHE "$stage/$relay/"
 
@@ -347,8 +433,12 @@ jobs:
           xattr -dr com.apple.quarantine /Applications/Remu.app
           ```
 
-          **Windows** — unzip anywhere and run `remu.exe`. SmartScreen will say "Windows
-          protected your PC" the first time: **More info → Run anyway**.
+          **Windows** — unzip it somewhere permanent, not Downloads, and run `remu.exe`.
+          SmartScreen will say "Windows protected your PC" the first time: **More info →
+          Run anyway**. When your first session starts, Windows asks whether Remu may use
+          the network: tick the network type you are on and click **Allow access**. Do
+          not click Cancel — Windows then blocks it silently for good. The `Read Me.txt`
+          in the zip says how to undo that if it happens.
 
           **Linux** — make it executable and run it:
 

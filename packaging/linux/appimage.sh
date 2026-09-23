@@ -7,7 +7,7 @@
 #   SHA256SUMS-linux-<arch>.txt
 #
 # Run it on the oldest glibc the release supports — the release workflow does
-# that in an ubuntu:22.04 container — not on whatever machine is handy. A
+# that on an ubuntu-22.04 runner — not on whatever machine is handy. A
 # binary's glibc floor is whatever it was linked against, and a floor above
 # GLIBC_MAX means the user sees "GLIBC_2.39 not found" instead of a window, so
 # the check before packaging refuses to ship it.
@@ -49,6 +49,9 @@ TOOLS="$REPO_ROOT/target/appimage-tools"
 # 22.04, which also clears Debian 12, Fedora 36+, Mint 21+ and Arch. Raise it
 # only together with a decision about who stops being able to run this.
 GLIBC_MAX="${GLIBC_MAX:-2.35}"
+# The same floor for libstdc++, which the host provides too: 3.4.30 is the
+# runtime Ubuntu 22.04 ships (GCC 12), and it clears the same distributions.
+GLIBCXX_MAX="${GLIBCXX_MAX:-3.4.30}"
 
 # linuxdeploy publishes a rolling "continuous" tag as well as dated ones. The
 # dated tags are used here because a release built next month has to be the
@@ -79,30 +82,12 @@ done
 
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
     say "Building remu and remu-relay (release)"
-    # openh264 is C++ and the only reason libstdc++ is in the picture. It is
-    # linked statically rather than bundled: a libstdc++.so.6 inside the
-    # AppImage is also handed to every library the host loads into this
-    # process, including the GL driver, which then cannot find the newer
-    # GLIBCXX it was built against and quietly drops the app to software
-    # rendering. libgcc_s stays dynamic on purpose — it is present everywhere,
-    # and two unwinders in one process is the worse trade.
-    RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-static-libstdc++" \
-        cargo build --release -p remu-desk -p remu-relay
+    cargo build --release -p remu-desk -p remu-relay
 fi
 
 for binary in target/release/remu target/release/remu-relay; do
     [ -x "$binary" ] || die "$binary is missing; run without SKIP_BUILD=1"
 done
-
-BUNDLE_LIBSTDCXX="${BUNDLE_LIBSTDCXX:-0}"
-if objdump -p target/release/remu | grep -q 'NEEDED.*libstdc++'; then
-    if [ "$BUNDLE_LIBSTDCXX" != "1" ]; then
-        die "libstdc++ is still a dynamic dependency, so -static-libstdc++ did not take.
-Install the C++ toolchain's static library (on Debian/Ubuntu it ships with g++),
-or accept the shadowing risk explicitly with BUNDLE_LIBSTDCXX=1."
-    fi
-    warn "bundling libstdc++.so.6: the host GL driver may fail to load against it"
-fi
 
 # -------------------------------------------------------------- assemble -----
 
@@ -120,6 +105,17 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$STAGE/dev.remu.desk.desktop" || die "the desktop file is not valid"
 fi
 
+# libstdc++ is on that list for the same reason glibc is, and it is the one
+# worth spelling out, because openh264 is C++ and linuxdeploy would otherwise
+# bundle it. A bundled libstdc++.so.6 is handed to every library the host
+# loads into this process — the GL driver included — and a driver built
+# against a newer GLIBCXX then fails to load and the app drops to software
+# rendering. Linking it statically is not the answer either: `cc` emits an
+# explicit `-lstdc++`, which `-static-libstdc++` does not touch, and asking cc
+# for a static link makes rustc bundle libstdc++.a into an rlib it cannot find
+# it for. Every desktop has libstdc++.so.6; what varies is its version, so the
+# floor is checked below exactly as glibc's is.
+#
 # Libraries the host owns. Bundling any of these is the classic AppImage
 # failure: the copy inside the bundle wins for the whole process and then
 # disagrees with the kernel driver, the compositor or the host GL stack it has
@@ -135,7 +131,8 @@ for pattern in \
     'libpipewire*.so*' 'libspa*.so*' \
     'libdbus-1*.so*' 'libsystemd*.so*' 'libgcrypt*.so*' 'libgpg-error*.so*' \
     'libfontconfig*.so*' 'libfreetype*.so*' \
-    'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*' 'librt.so*' 'libgcc_s.so*' 'ld-linux*.so*'
+    'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*' 'librt.so*' 'libgcc_s.so*' 'ld-linux*.so*' \
+    'libstdc++.so*'
 do
     exclude_args+=(--exclude-library "$pattern")
 done
@@ -152,12 +149,6 @@ if [ -n "$xkb_x11" ] && [ -e "$xkb_x11" ]; then
     library_args+=(--library "$xkb_x11")
 else
     warn "libxkbcommon-x11.so.0 was not found here; X11 keyboard input will depend on the user's copy"
-fi
-
-if [ "$BUNDLE_LIBSTDCXX" = "1" ]; then
-    libstdcxx="$(ldconfig -p 2>/dev/null | awk '/libstdc\+\+\.so\.6/ {print $NF; exit}' || true)"
-    [ -n "$libstdcxx" ] || die "BUNDLE_LIBSTDCXX=1 but libstdc++.so.6 is not in the loader cache"
-    library_args+=(--library "$libstdcxx")
 fi
 
 # ----------------------------------------------------------------- tools -----
@@ -184,7 +175,7 @@ fetch_tool \
     "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/$LINUXDEPLOY_PLUGIN_TAG/linuxdeploy-plugin-appimage-$ARCH.AppImage" \
     "$TOOLS/linuxdeploy-plugin-appimage-$ARCH.AppImage" "$LINUXDEPLOY_PLUGIN_SHA256"
 
-# Both tools are AppImages themselves and a CI container has no /dev/fuse, so
+# Both tools are AppImages themselves and a CI runner has no /dev/fuse, so
 # they have to unpack rather than mount.
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$TOOLS:$PATH"
@@ -211,11 +202,8 @@ say "Verifying the bundle before it is sealed"
 grep -q 'Remu cannot start' "$APPDIR/AppRun" \
     || die "AppDir/AppRun is not packaging/linux/AppRun; --custom-apprun was ignored and the missing-library message is gone"
 
-denied='^(libGL|libGLX|libEGL|libGLdispatch|libOpenGL|libvulkan|libdrm|libgbm|libglapi|libX11|libX[a-zA-Z0-9]|libxcb|libwayland|libpipewire|libspa|libdbus-1|libsystemd|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|ld-linux)'
+denied='^(libGL|libGLX|libEGL|libGLdispatch|libOpenGL|libvulkan|libdrm|libgbm|libglapi|libX11|libX[a-zA-Z0-9]|libxcb|libwayland|libpipewire|libspa|libdbus-1|libsystemd|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|ld-linux|libstdc\+\+)'
 allowed='^(libxkbcommon\.so|libxkbcommon-x11\.so)'
-if [ "$BUNDLE_LIBSTDCXX" = "1" ]; then
-    allowed="$allowed"'|^libstdc\+\+\.so'
-fi
 
 if [ -d "$APPDIR/usr/lib" ]; then
     while IFS= read -r lib; do
@@ -244,8 +232,21 @@ done
 printf '\n  glibc floor: %s (limit %s)\n' "${floor:-unknown}" "$GLIBC_MAX"
 if [ -n "$floor" ] && [ "$(printf '%s\n%s\n' "$floor" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
     die "these binaries need glibc $floor, above the $GLIBC_MAX this release promises.
-Build in the ubuntu:22.04 container the release workflow uses, or raise GLIBC_MAX
+Build on Ubuntu 22.04, as the release workflow does, or raise GLIBC_MAX
 deliberately and say in the release notes which distributions just lost support."
+fi
+
+cxxfloor=""
+for binary in "$APPDIR/usr/bin/remu" target/release/remu-relay; do
+    highest="$(objdump -p "$binary" | grep -oE 'GLIBCXX_[0-9]+(\.[0-9]+)+' | sed 's/GLIBCXX_//' | sort -V | tail -1 || true)"
+    [ -n "$highest" ] || continue
+    cxxfloor="$(printf '%s\n%s\n' "$cxxfloor" "$highest" | sed '/^$/d' | sort -V | tail -1 || true)"
+done
+printf '  libstdc++ floor: GLIBCXX_%s (limit GLIBCXX_%s)\n' "${cxxfloor:-none}" "$GLIBCXX_MAX"
+if [ -n "$cxxfloor" ] && [ "$(printf '%s\n%s\n' "$cxxfloor" "$GLIBCXX_MAX" | sort -V | tail -1)" != "$GLIBCXX_MAX" ]; then
+    die "these binaries need GLIBCXX_$cxxfloor, above the GLIBCXX_$GLIBCXX_MAX this release promises.
+The C++ compiler is newer than the release's floor: build with the distribution's
+default g++ on Ubuntu 22.04, or raise GLIBCXX_MAX deliberately."
 fi
 
 # ---------------------------------------------------------------- output -----

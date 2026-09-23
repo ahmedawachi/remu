@@ -39,6 +39,8 @@ if [ -n "$missing" ]; then
                 hint='D-Bus — Debian/Ubuntu: libdbus-1-3 · Fedora: dbus-libs · Arch: dbus' ;;
             libwayland-client.so.0)
                 hint='Wayland — Debian/Ubuntu: libwayland-client0 · Fedora: libwayland-client · Arch: wayland' ;;
+            libstdc++.so.6)
+                hint='the C++ runtime — Debian/Ubuntu: libstdc++6 · Fedora: libstdc++ · Arch: gcc-libs' ;;
             libxkbcommon*.so.0)
                 hint='xkbcommon — Debian/Ubuntu: libxkbcommon0 libxkbcommon-x11-0 · Fedora: libxkbcommon libxkbcommon-x11' ;;
             *)

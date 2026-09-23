@@ -10,6 +10,7 @@
 # The baselines are tracked; these two are the evidence, not the record.
 crates/remu-desk/tests/snapshots/*.diff.png
 crates/remu-desk/tests/snapshots/*.new.png
+crates/remu-desk/tests/snapshots/*.old.png
 
 __pycache__/
 

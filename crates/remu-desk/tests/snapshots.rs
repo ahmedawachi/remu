@@ -118,20 +118,52 @@ fn lived_in(route: Route) -> AppState {
     state.my_id = Some(remu_proto::PeerId::new(482_100_337).expect("valid id"));
     state.link = remu_desk::state::LinkStatus::Ready;
     state.settings.alias = "Ahmed — MacBook Pro".to_owned();
+    // Ages, not instants. The Recent list renders this column through
+    // `format_ago`, which subtracts from the clock — so a fixed timestamp makes
+    // the committed image drift by a day every day, and the snapshot was
+    // failing on nothing but the calendar.
+    //
+    // The three ages are deliberately one per branch of `format_ago`, and each
+    // is offset well clear of the boundary where it would round to the next
+    // unit, so a slow render cannot tip "12m" into "13m".
     state.history = [
-        (987_654_321u32, "Reception PC", true),
-        (903_771_204, "Warehouse terminal", true),
-        (115_640_982, "Site office", false),
+        (
+            987_654_321u32,
+            "Reception PC",
+            true,
+            12 * MINUTE + 30 * SECOND,
+        ),
+        (
+            903_771_204,
+            "Warehouse terminal",
+            true,
+            3 * HOUR + 30 * MINUTE,
+        ),
+        (115_640_982, "Site office", false, 5 * DAY + 12 * HOUR),
     ]
     .into_iter()
-    .map(|(id, alias, favorite)| remu_proto::ConnectionRecord {
+    .map(|(id, alias, favorite, age)| remu_proto::ConnectionRecord {
         peer_id: remu_proto::PeerId::new(id).expect("valid id"),
         alias: Some(alias.to_owned()),
-        last_connected_at: 1_700_000_000_000,
+        last_connected_at: now_ms() - age,
         favorite,
     })
     .collect();
     state
+}
+
+const SECOND: u64 = 1_000;
+const MINUTE: u64 = 60 * SECOND;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
+
+/// The same clock the views read, so an age computed here and rendered there
+/// differ by the microseconds between the two calls rather than by a timezone.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .expect("a clock at or after the epoch")
 }
 
 #[test]

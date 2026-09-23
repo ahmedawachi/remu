@@ -85,12 +85,14 @@ case "${1:-}" in
     # ScreenCaptureKit while claiming to run on 10.12 launches on Macs that
     # cannot capture anything and crashes in a framework call instead.
     export MACOSX_DEPLOYMENT_TARGET=$MIN_MACOS
-    # Cargo does not re-link a unit it considers fresh, so a binary left at
-    # these paths by a build with a different deployment target outlives a
-    # rebuild. Deleting them first costs nothing when the right artefact is
-    # already in the fingerprint cache — it is re-linked in under a second.
-    rm -f "target/$ARM/release/remu" "target/$ARM/release/remu-relay" \
-      "target/$INTEL/release/remu" "target/$INTEL/release/remu-relay"
+    # MACOSX_DEPLOYMENT_TARGET is not part of cargo's fingerprint for a Rust
+    # unit, so a cache that already holds these two binaries hands them back
+    # untouched with whatever floor they were first linked against — and the
+    # only trace is a load command nobody reads. Only our own two crates are
+    # discarded; every dependency stays compiled, so this costs the LTO link
+    # and nothing else.
+    cargo clean -p remu-desk -p remu-relay --release --target "$ARM"
+    cargo clean -p remu-desk -p remu-relay --release --target "$INTEL"
     cargo build --release --target "$ARM" -p remu-desk -p remu-relay
     cargo build --release --target "$INTEL" -p remu-desk -p remu-relay
     ;;

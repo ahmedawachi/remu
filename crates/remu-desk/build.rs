@@ -32,14 +32,23 @@ fn main() {
         .set("LegalCopyright", "MIT OR Apache-2.0");
 
     if let Err(err) = resource.compile() {
-        // Cross-compiling to Windows from another host has no `rc.exe`, and a
-        // missing icon is not worth failing that build over. Said out loud
-        // rather than swallowed, because the release artifact must not ship
-        // like this: on a Windows host the resource compiler is present and a
-        // failure here is real.
-        if cfg!(windows) {
+        // Hard failure only where a resource compiler is genuinely expected: a
+        // Windows host building for MSVC, which is what the release runner is.
+        // That is narrower than `cfg!(windows)` on purpose — the MSVC path
+        // wants `rc.exe` from the Windows SDK, while the `-gnu` path wants
+        // `windres` from a MinGW install that a contributor may not have, and
+        // failing their build over a missing icon would be gatekeeping.
+        //
+        // Everywhere else this is said out loud rather than swallowed, because
+        // a cross-compiled release artefact must not ship without its icon and
+        // version block and nobody would otherwise notice.
+        let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+        if cfg!(windows) && target_env == "msvc" {
             panic!("could not embed the Windows resources: {err}");
         }
-        println!("cargo:warning=building for Windows without a resource compiler; the executable will have no icon or version metadata");
+        println!(
+            "cargo:warning=no Windows resource compiler ({err}); \
+             remu.exe will have no icon and no version metadata"
+        );
     }
 }
