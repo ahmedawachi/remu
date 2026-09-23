@@ -119,6 +119,14 @@ fi
 # it for. Every desktop has libstdc++.so.6; what varies is its version, so the
 # floor is checked below exactly as glibc's is.
 #
+# The last two lines are not anything Remu uses. linuxdeploy works from ldd's
+# flattened list, so excluding a library does not exclude what that library
+# pulls in: libbsd and libmd arrive under libXdmcp, and libcap, liblz4, liblzma
+# and libzstd under libsystemd — both excluded above. Shipping those children
+# would hand the host's own libsystemd our copies of its dependencies, which is
+# the same shadowing the rest of this list exists to prevent, one level down.
+# The allow list below is what catches the next one of these.
+#
 # Libraries the host owns. Bundling any of these is the classic AppImage
 # failure: the copy inside the bundle wins for the whole process and then
 # disagrees with the kernel driver, the compositor or the host GL stack it has
@@ -135,7 +143,9 @@ for pattern in \
     'libdbus-1*.so*' 'libsystemd*.so*' 'libgcrypt*.so*' 'libgpg-error*.so*' \
     'libfontconfig*.so*' 'libfreetype*.so*' \
     'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*' 'librt.so*' 'libgcc_s.so*' 'ld-linux*.so*' \
-    'libstdc++.so*'
+    'libstdc++.so*' \
+    'libbsd.so*' 'libmd.so*' \
+    'libcap.so*' 'liblz4.so*' 'liblzma.so*' 'libzstd.so*'
 do
     exclude_args+=(--exclude-library "$pattern")
 done
@@ -209,7 +219,7 @@ say "Verifying the bundle before it is sealed"
 grep -q 'Remu cannot start' "$APPDIR/AppRun" \
     || die "AppDir/AppRun is not packaging/linux/AppRun; --custom-apprun was ignored and the missing-library message is gone"
 
-denied='^(libGL|libGLX|libEGL|libGLdispatch|libOpenGL|libvulkan|libdrm|libgbm|libglapi|libX11|libX[a-zA-Z0-9]|libxcb|libwayland|libpipewire|libspa|libdbus-1|libsystemd|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|ld-linux|libstdc\+\+)'
+denied='^(libGL|libGLX|libEGL|libGLdispatch|libOpenGL|libvulkan|libdrm|libgbm|libglapi|libX11|libX[a-zA-Z0-9]|libxcb|libwayland|libpipewire|libspa|libdbus-1|libsystemd|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|ld-linux|libstdc\+\+|libbsd|libmd\.so|libcap\.so|liblz4|liblzma|libzstd)'
 allowed='^(libxkbcommon\.so|libxkbcommon-x11\.so)'
 
 if [ -d "$APPDIR/usr/lib" ]; then
