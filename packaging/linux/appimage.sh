@@ -161,12 +161,13 @@ do
     exclude_args+=(--exclude-library "$pattern")
 done
 
-# libxkbcommon is the one exception, bundled for one reason: it is a hard
-# NEEDED entry, so its absence is a loader error before a pixel is drawn, and
-# unlike everything above it talks to nothing but /usr/share/X11/xkb, which it
-# finds by absolute path. Its X11 half is dlopened by winit, so linuxdeploy
-# cannot see it and it has to be named here — the pair must come from one
-# build or they disagree internally.
+# libxkbcommon is the one exception. winit dlopens it to translate every key
+# press, and unlike everything above it talks to nothing but
+# /usr/share/X11/xkb, which it finds by absolute path, so a bundled copy
+# cannot disagree with the host. Because it is dlopened rather than linked,
+# linuxdeploy cannot see it: its X11 half is named here, and the core arrives
+# as that half's own dependency — which is also what keeps the pair from one
+# build, since two builds of it in one process disagree internally.
 library_args=()
 xkb_x11="$(ldconfig -p 2>/dev/null | awk '/libxkbcommon-x11\.so\.0/ {print $NF; exit}' || true)"
 if [ -n "$xkb_x11" ] && [ -e "$xkb_x11" ]; then
