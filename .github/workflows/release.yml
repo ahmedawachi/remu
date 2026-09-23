@@ -206,8 +206,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          # appimagetool mounts itself with FUSE, which hosted runners do not
-          # have. This makes it unpack to a temporary directory instead.
+          # linuxdeploy and its AppImage plugin are AppImages, which mount
+          # themselves with FUSE unless told to unpack, and hosted runners have
+          # no FUSE. appimage.sh exports this too; it is repeated here so the
+          # step's own environment says so.
           APPIMAGE_EXTRACT_AND_RUN: "1"
           # The binaries the Build step just produced are exactly the ones to
           # ship; letting the script compile them again costs a second fat-LTO
@@ -218,10 +220,13 @@ jobs:
           OUT_DIR: ${{ github.workspace }}/dist
         run: ./packaging/linux/appimage.sh
 
-      # appimage.sh checks what went into the bundle; this checks the tarball
-      # works once unpacked somewhere else, which is where a wrong rpath shows
-      # up. The desk app needs a display to start, so it is proven only to
-      # resolve every library; the relay is headless and is actually run.
+      # appimage.sh checks what each artefact carries; this checks the tarball
+      # behaves once unpacked somewhere else. Resolving libraries is not enough
+      # on its own: this runner has its own xkbcommon installed, so a wrong
+      # rpath would still resolve — to the system copy — and print nothing. So
+      # the runpath is read directly, and the bundled pair has to bind to each
+      # other. The desk app needs a display to start and is only proven to
+      # link; the relay is headless and is actually run.
       - name: Verify the Linux tarball
         if: runner.os == 'Linux'
         run: |
@@ -230,11 +235,27 @@ jobs:
           rm -rf "$unpack" && mkdir -p "$unpack"
           tar -xzf dist/remu-*-linux.tar.gz -C "$unpack"
           dir=$(find "$unpack" -mindepth 1 -maxdepth 1 -type d)
-          ls -la "$dir"
-          if ldd "$dir/remu" | grep 'not found'; then
+          ls -la "$dir" "$dir/lib"
+
+          deps=$(ldd "$dir/remu")
+          printf '%s\n' "$deps"
+          if grep -q 'not found' <<<"$deps"; then
             echo "the unpacked remu cannot resolve the libraries above" >&2
             exit 1
           fi
+          readelf -d "$dir/remu" | grep -E 'Library r(un)?path: \[\$ORIGIN/lib\]' \
+            || { echo "the unpacked remu does not look in its own lib directory" >&2; exit 1; }
+          for lib in libxkbcommon.so.0 libxkbcommon-x11.so.0; do
+            test -f "$dir/lib/$lib" \
+              || { echo "$lib is missing from the tarball" >&2; exit 1; }
+          done
+          # The X11 half is dlopened, so ldd of remu never shows it: check it
+          # binds to the bundled core rather than to the runner's.
+          ldd "$dir/lib/libxkbcommon-x11.so.0" \
+            | grep -F "libxkbcommon.so.0 => $dir/lib/libxkbcommon.so.0" \
+            || { echo "the bundled libxkbcommon-x11 does not bind to the bundled libxkbcommon" >&2; exit 1; }
+          test -f "$dir/dev.remu.desk.desktop" && test -f "$dir/dev.remu.desk.png"
+
           "$dir/remu-relay" --version
           test -x dist/Remu-*.AppImage
 
@@ -421,7 +442,7 @@ jobs:
           |---|---|
           | macOS, Apple silicon or Intel | the `macos-universal.dmg` |
           | Windows 10 or 11, 64-bit | the `windows-x86_64.zip` |
-          | Linux, 64-bit | the `.AppImage` |
+          | Linux, 64-bit Intel or AMD (x86_64) | the `.AppImage` |
 
           No installer, no admin rights, and nothing to install first.
 
@@ -473,8 +494,8 @@ jobs:
           `SHA256SUMS` covers every file here.
 
           ```
-          shasum -a 256 -c SHA256SUMS   # macOS
-          sha256sum -c SHA256SUMS       # Linux
+          shasum -a 256 -c --ignore-missing SHA256SUMS   # macOS
+          sha256sum -c --ignore-missing SHA256SUMS       # Linux
           ```
           NOTES
 

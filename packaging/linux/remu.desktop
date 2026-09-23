@@ -9,7 +9,9 @@ Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=remote;desktop;screen;share;control;support;
 StartupNotify=true
-# Wayland matches a window to this file by app id, so the file has to be
-# installed as dev.remu.desk.desktop. X11 has no app id: winit falls back to
-# argv[0], which makes the window class the binary name instead.
-StartupWMClass=remu
+# The window is dev.remu.desk on both display servers. Wayland matches it to
+# this file by app id, so the file is installed as dev.remu.desk.desktop. On
+# X11 egui hands the same app id to winit as the window name, which winit
+# writes as the WM_CLASS class — its argv[0] fallback only applies when no name
+# is given.
+StartupWMClass=dev.remu.desk

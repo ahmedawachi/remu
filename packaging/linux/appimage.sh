@@ -41,8 +41,9 @@ OUT_DIR="${OUT_DIR:-$REPO_ROOT/target/dist}"
 WORK_DIR="$REPO_ROOT/target/appimage"
 APPDIR="$WORK_DIR/AppDir"
 STAGE="$WORK_DIR/stage"
-# Outside WORK_DIR, which is wiped every run: these two downloads are 35 MB and
-# are re-verified against their digests whether they were just fetched or not.
+# Outside WORK_DIR, which is wiped every run: the three downloads below are
+# 36 MB together, and are re-verified against their digests whether they were
+# just fetched or not.
 TOOLS="$REPO_ROOT/target/appimage-tools"
 
 # The highest glibc symbol version the binaries may require. 2.39 is Ubuntu
@@ -56,23 +57,33 @@ GLIBC_MAX="${GLIBC_MAX:-2.39}"
 # ships at least that runtime.
 GLIBCXX_MAX="${GLIBCXX_MAX:-3.4.32}"
 
-# linuxdeploy publishes a rolling "continuous" tag as well as dated ones. The
-# dated tags are used here because a release built next month has to be the
-# same bundle as one built today, and the digests are what those two assets
-# were when they were pinned. A mismatch means upstream re-cut the tag: look
-# at the new file before moving the pin.
+# linuxdeploy, its AppImage plugin and the AppImage runtime all publish a
+# rolling "continuous" tag as well as dated ones. The dated tags are used here
+# because a release built next month has to be the same bundle as one built
+# today, and the digests are what those assets were when they were pinned. A
+# mismatch means upstream re-cut the tag: look at the new file before moving
+# the pin.
+#
+# The runtime is pinned separately because nothing else pins it: left alone,
+# the appimagetool inside the plugin downloads the rolling runtime on every
+# build and checks no digest. It is the ELF header of the AppImage — the first
+# code that runs on the user's machine, and the code that decides whether the
+# no-FUSE fallback the release notes promise works at all.
 LINUXDEPLOY_TAG="${LINUXDEPLOY_TAG:-1-alpha-20251107-1}"
 LINUXDEPLOY_PLUGIN_TAG="${LINUXDEPLOY_PLUGIN_TAG:-1-alpha-20250213-1}"
+APPIMAGE_RUNTIME_TAG="${APPIMAGE_RUNTIME_TAG:-20251108}"
 case "$ARCH" in
     x86_64)
         LINUXDEPLOY_SHA256="${LINUXDEPLOY_SHA256:-c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d}"
         LINUXDEPLOY_PLUGIN_SHA256="${LINUXDEPLOY_PLUGIN_SHA256:-992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3}"
+        APPIMAGE_RUNTIME_SHA256="${APPIMAGE_RUNTIME_SHA256:-2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d}"
         ;;
     *)
         # The same tags carry other architectures, but nobody has verified
         # those assets here. Supplying the digests is the sign-off.
-        if [ -z "${LINUXDEPLOY_SHA256:-}" ] || [ -z "${LINUXDEPLOY_PLUGIN_SHA256:-}" ]; then
-            die "$ARCH is not pinned: export LINUXDEPLOY_SHA256 and LINUXDEPLOY_PLUGIN_SHA256 for the $ARCH assets first"
+        if [ -z "${LINUXDEPLOY_SHA256:-}" ] || [ -z "${LINUXDEPLOY_PLUGIN_SHA256:-}" ] ||
+            [ -z "${APPIMAGE_RUNTIME_SHA256:-}" ]; then
+            die "$ARCH is not pinned: export LINUXDEPLOY_SHA256, LINUXDEPLOY_PLUGIN_SHA256 and APPIMAGE_RUNTIME_SHA256 for the $ARCH assets first"
         fi
         ;;
 esac
@@ -186,16 +197,19 @@ fetch_tool() {
 fetch_tool \
     "https://github.com/linuxdeploy/linuxdeploy/releases/download/$LINUXDEPLOY_TAG/linuxdeploy-$ARCH.AppImage" \
     "$TOOLS/linuxdeploy-$ARCH.AppImage" "$LINUXDEPLOY_SHA256"
-# Shipped separately from linuxdeploy, which prefers a plugin found on PATH
-# over the older copy inside its own bundle.
+# Fetched on its own because it is run on its own, after the checks below, to
+# seal the AppImage. Going through linuxdeploy again for that step would
+# re-deploy every dependency of the AppDir without the exclude list.
 fetch_tool \
     "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/$LINUXDEPLOY_PLUGIN_TAG/linuxdeploy-plugin-appimage-$ARCH.AppImage" \
     "$TOOLS/linuxdeploy-plugin-appimage-$ARCH.AppImage" "$LINUXDEPLOY_PLUGIN_SHA256"
+fetch_tool \
+    "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME_TAG/runtime-$ARCH" \
+    "$TOOLS/runtime-$ARCH" "$APPIMAGE_RUNTIME_SHA256"
 
 # Both tools are AppImages themselves and a CI runner has no /dev/fuse, so
 # they have to unpack rather than mount.
 export APPIMAGE_EXTRACT_AND_RUN=1
-export PATH="$TOOLS:$PATH"
 
 # ---------------------------------------------------------------- deploy -----
 
@@ -222,18 +236,24 @@ grep -q 'Remu cannot start' "$APPDIR/AppRun" \
 denied='^(libGL|libGLX|libEGL|libGLdispatch|libOpenGL|libvulkan|libdrm|libgbm|libglapi|libX11|libX[a-zA-Z0-9]|libxcb|libwayland|libpipewire|libspa|libdbus-1|libsystemd|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|ld-linux|libstdc\+\+|libbsd|libmd\.so|libcap\.so|liblz4|liblzma|libzstd)'
 allowed='^(libxkbcommon\.so|libxkbcommon-x11\.so)'
 
-if [ -d "$APPDIR/usr/lib" ]; then
+# Run against the AppDir before sealing, and again against what each artefact
+# actually carries, so the check describes the files that ship rather than an
+# intermediate state a later step could still change.
+check_bundled_libs() {
+    local dir="$1" what="$2" lib base
+    [ -d "$dir" ] || return 0
     while IFS= read -r lib; do
         base="$(basename "$lib")"
         if printf '%s' "$base" | grep -Eq "$denied"; then
-            die "$base was bundled and must not be: it has to come from the user's system"
+            die "$what carries $base, which must not be bundled: it has to come from the user's system"
         fi
         if ! printf '%s' "$base" | grep -Eq "$allowed"; then
-            die "$base was bundled and nobody decided that. Exclude it, or add it to the allow list with a reason."
+            die "$what carries $base, and nobody decided that. Exclude it, or add it to the allow list with a reason."
         fi
-        printf '  bundled: %s\n' "$base"
-    done < <(find "$APPDIR/usr/lib" -maxdepth 1 \( -type f -o -type l \) | sort)
-fi
+        printf '  %s: %s\n' "$what" "$base"
+    done < <(find "$dir" -maxdepth 1 \( -type f -o -type l \) | sort)
+}
+check_bundled_libs "$APPDIR/usr/lib" "AppDir"
 
 printf '\n  host must provide:\n'
 objdump -p "$APPDIR/usr/bin/remu" | awk '/NEEDED/ {printf "    %s\n", $2}'
@@ -268,22 +288,37 @@ fi
 
 # ---------------------------------------------------------------- output -----
 
-# A second invocation, so that the checks above sit between deployment and the
-# sealed file. The desktop file, icon and AppRun are passed again because this
-# call re-derives them from its arguments; without --executable it deploys no
-# libraries, so nothing verified above can change here.
+# Sealing is a separate step so that the checks above sit between deployment
+# and the sealed file, and it runs the plugin directly rather than through
+# linuxdeploy. That is not a shortcut: every linuxdeploy run re-traces every ELF
+# already in the AppDir and deploys what it finds, whatever flags it is given,
+# so a second linuxdeploy call would re-bundle everything excluded above — after
+# the check that exists to catch it. The plugin takes the AppDir as it is: the
+# first call already put the desktop entry, icon and AppRun at its root.
 say "Building the AppImage"
 APPIMAGE="$OUT_DIR/Remu-$VERSION-$ARCH.AppImage"
 LDAI_OUTPUT="$APPIMAGE" \
-LDAI_VERSION="$VERSION" \
+LINUXDEPLOY_OUTPUT_VERSION="$VERSION" \
+LDAI_RUNTIME_FILE="$TOOLS/runtime-$ARCH" \
 LDAI_NO_APPSTREAM=1 \
-    "$TOOLS/linuxdeploy-$ARCH.AppImage" \
-        --appdir "$APPDIR" \
-        --desktop-file "$STAGE/dev.remu.desk.desktop" \
-        --icon-file "$STAGE/dev.remu.desk.png" \
-        --custom-apprun packaging/linux/AppRun \
-        --output appimage
+    "$TOOLS/linuxdeploy-plugin-appimage-$ARCH.AppImage" --appdir "$APPDIR"
+[ -f "$APPIMAGE" ] || die "the plugin finished without writing $APPIMAGE"
 chmod +x "$APPIMAGE"
+
+say "Verifying the sealed AppImage"
+# Unpacked with the runtime's own extractor, which needs no FUSE, so what is
+# checked is the squashfs a user's machine will mount, not the AppDir it was
+# made from.
+SEALED="$WORK_DIR/sealed"
+rm -rf "$SEALED" && mkdir -p "$SEALED"
+( cd "$SEALED" && "$APPIMAGE" --appimage-extract >/dev/null )
+check_bundled_libs "$SEALED/squashfs-root/usr/lib" "AppImage"
+grep -q 'Remu cannot start' "$SEALED/squashfs-root/AppRun" \
+    || die "the sealed AppImage does not start through packaging/linux/AppRun"
+[ -f "$SEALED/squashfs-root/dev.remu.desk.desktop" ] \
+    || die "the sealed AppImage has no dev.remu.desk.desktop at its root"
+[ -x "$SEALED/squashfs-root/usr/bin/remu" ] \
+    || die "the sealed AppImage has no usr/bin/remu"
 
 # Every no-FUSE instruction in the release notes goes through this switch in
 # the runtime, so if a future runtime drops it the notes are wrong and the user
@@ -305,9 +340,12 @@ fi
 # The AppDir keeps libraries one level up from the binary; this layout is flat,
 # because someone who unpacks a tarball should see ./remu, not usr/bin/remu.
 patchelf --set-rpath '$ORIGIN/lib' "$FLAT/remu"
-install -m644 packaging/linux/remu.desktop "$FLAT/remu.desktop"
-install -m644 docs/media/mark.png "$FLAT/remu.png"
+# The same names the AppImage uses, for the same reason: the entry's Icon= key
+# and the window's app id both say dev.remu.desk.
+install -m644 "$STAGE/dev.remu.desk.desktop" "$FLAT/dev.remu.desk.desktop"
+install -m644 "$STAGE/dev.remu.desk.png" "$FLAT/dev.remu.desk.png"
 install -m644 README.md LICENSE-MIT LICENSE-APACHE "$FLAT/"
+check_bundled_libs "$FLAT/lib" "tarball"
 tar --owner=0 --group=0 --numeric-owner -czf \
     "$OUT_DIR/remu-$VERSION-$ARCH-linux.tar.gz" -C "$WORK_DIR" "remu-$VERSION-$ARCH-linux"
 
