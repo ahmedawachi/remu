@@ -4152,6 +4152,7 @@ dependencies = [
  "remu-proto",
  "scap",
  "serde_json",
+ "sysinfo",
  "thiserror 2.0.20",
  "tracing",
  "windows-capture",

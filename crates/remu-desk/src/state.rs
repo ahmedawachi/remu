@@ -411,6 +411,7 @@ pub enum Action {
     ConnectTo(PeerId),
     CopyMyId,
     RequestAccessibility,
+    RequestScreenRecording,
     OpenPrivacySettings(remu_input::permissions::PrivacyPane),
     RemoteInput(InputEvent),
     /// A text field changed. See the module docs for why this is an action.

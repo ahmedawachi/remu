@@ -73,13 +73,17 @@ fn draw_mark(painter: &egui::Painter, rect: Rect, corner: u8) {
         rect.min + vec2(unit * 3.6, unit * 4.0),
         vec2(unit * 4.4, unit * 3.2),
     );
+    // The screens' own corners scale with the mark like everything else in it:
+    // 2 px at the README's 224 px, so the icon master is the same drawing
+    // rather than the same shape with sharper corners.
+    let screen_corner = CornerRadius::same((rect.width() / 112.0).round() as u8);
     painter.rect_stroke(
         far,
-        CornerRadius::same(2),
+        screen_corner,
         Stroke::new(unit * 0.42, Color32::from_white_alpha(150)),
         StrokeKind::Inside,
     );
-    painter.rect_filled(near, CornerRadius::same(2), Color32::WHITE);
+    painter.rect_filled(near, screen_corner, Color32::WHITE);
 }
 
 #[test]
@@ -92,10 +96,10 @@ fn mark() {
 
 /// The master the platform icons are cut from.
 ///
-/// 1024 is the largest slot macOS asks for, and every other size an `.icns` or
-/// `.ico` needs divides into it, so the packaging scripts only ever downsample.
-/// Rendering it rather than upscaling `mark.png` is the point: the mark is
-/// drawn, not a raster, so there is no reason for an app icon to be soft.
+/// 1024 is the largest slot macOS asks for and no `.icns` or `.ico` size is
+/// bigger, so the packaging scripts only ever scale it down. Rendering it
+/// rather than upscaling `mark.png` is the point: the mark is drawn, not a
+/// raster, so there is no reason for an app icon to be soft.
 #[test]
 #[ignore = "writes packaging/icons; run with --ignored to regenerate"]
 fn app_icon() {
@@ -104,9 +108,10 @@ fn app_icon() {
         "icon-1024",
         vec2(1024.0, 1024.0),
         |painter, rect| {
-            // Proportional to `mark`: the same inset and corner at four times
-            // the scale, so the two images stay the same drawing.
-            draw_mark(painter, rect.shrink(32.0), 224);
+            // Proportional to `mark` at four times the scale. The harness wraps
+            // every render in a fixed 8 px margin that does not scale, so the
+            // mark's 16 px inset (8 + 8) becomes 8 + 56 here, not 8 + 32.
+            draw_mark(painter, rect.shrink(56.0), 224);
         },
     );
 }

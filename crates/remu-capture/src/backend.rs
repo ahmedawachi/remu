@@ -51,11 +51,55 @@ pub(crate) const MAX_FPS: u32 = 240;
 pub(crate) const PORTAL_DISPLAY_ID: &str = "portal";
 
 const UNSUPPORTED: &str =
-    "this system has no supported screen-capture API (macOS 12.3+, Windows 10 1803+, \
+    "this system has no supported screen-capture API (macOS 13.1+, Windows 10 2004+, \
      or a PipeWire desktop portal is required)";
 
+/// The oldest macOS the bundled ScreenCaptureKit bindings run on.
+///
+/// Not ScreenCaptureKit's own 12.3: `screencapturekit` 0.2 sends
+/// `SCWindow.isActive` (13.1) to every window it lists and sets
+/// `SCStreamConfiguration.capturesAudio` (13.0) on every stream, and on an
+/// older system either one is an unrecognized-selector exception, which its
+/// `objc` bindings turn into a panic.
+#[cfg(any(target_os = "macos", test))]
+const MIN_MACOS: (u32, u32) = (13, 1);
+
+/// Whether this OS build can capture at all.
+///
+/// On macOS this deliberately does not ask scap. Its check compares the version
+/// string with "12.3" byte by byte, so it accepts exactly the releases where
+/// the bindings above panic, and it `expect`s the version to be readable.
+pub(crate) fn supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        sysinfo::System::os_version().is_some_and(|v| macos_version_supported(&v))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        scap::is_supported()
+    }
+}
+
+/// Parses a macOS product version such as "15.6.1" and compares it with
+/// [`MIN_MACOS`] as numbers. Anything unreadable is unsupported: guessing yes
+/// would walk straight into the panic this exists to avoid.
+#[cfg(any(target_os = "macos", test))]
+fn macos_version_supported(version: &str) -> bool {
+    let mut parts = version.trim().split('.');
+    let major = match parts.next().map(str::parse::<u32>) {
+        Some(Ok(major)) => major,
+        _ => return false,
+    };
+    let minor = match parts.next().map(str::parse::<u32>) {
+        None => 0,
+        Some(Ok(minor)) => minor,
+        Some(Err(_)) => return false,
+    };
+    (major, minor) >= MIN_MACOS
+}
+
 pub(crate) fn list_displays() -> Result<Vec<DisplayTarget>, CaptureError> {
-    if !scap::is_supported() {
+    if !supported() {
         return Err(CaptureError::Unsupported(UNSUPPORTED.to_string()));
     }
     if !scap::has_permission() {
@@ -177,7 +221,7 @@ pub(crate) fn open(
     display_id: &str,
     opts: CaptureOptions,
 ) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
-    if !scap::is_supported() {
+    if !supported() {
         return Err(CaptureError::Unsupported(UNSUPPORTED.to_string()));
     }
     if !scap::has_permission() {
@@ -542,6 +586,41 @@ fn panic_text(payload: &Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accepts_the_first_macos_the_capture_bindings_run_on_and_everything_after() {
+        for version in ["13.1", "13.1.2", "13.6", "14.0", "15.6.1", "26.0", "26"] {
+            assert!(super::macos_version_supported(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn rejects_the_releases_a_byte_wise_comparison_with_12_3_lets_through() {
+        for version in ["12.3", "12.4", "12.7.6", "13.0", "13.0.1", "12"] {
+            assert!(!super::macos_version_supported(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn treats_a_version_it_cannot_read_as_unsupported() {
+        for version in ["", " ", "abc", "13.x", ".1", "-13.1", "13.1\n\n"] {
+            let trimmed_is_valid = version.trim() == "13.1";
+            assert_eq!(
+                super::macos_version_supported(version),
+                trimmed_is_valid,
+                "{version:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_the_running_macos_version_and_accepts_it() {
+        // CI and every machine that can build this run 13.1 or newer; the
+        // point is that the real sysinfo string parses, not just the samples.
+        let version = sysinfo::System::os_version().expect("macOS reports a version");
+        assert!(super::macos_version_supported(&version), "{version}");
+    }
+
     use super::*;
     use scap::frame::{BGRAFrame, BGRxFrame, YUVFrame};
 

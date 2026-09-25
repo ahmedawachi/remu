@@ -123,9 +123,11 @@ fn lived_in(route: Route) -> AppState {
     // the committed image drift by a day every day, and the snapshot was
     // failing on nothing but the calendar.
     //
-    // The three ages are deliberately one per branch of `format_ago`, and each
-    // is offset well clear of the boundary where it would round to the next
-    // unit, so a slow render cannot tip "12m" into "13m".
+    // One age each for the minutes, hours and days branches of `format_ago`
+    // ("never" and "just now" are its unit tests' business, not a lived-in
+    // list's). `format_ago` floors, so each age sits half a unit above a whole
+    // one: a render seconds slower than this line still floors to the same
+    // label, and could only reach the next one after half a unit.
     state.history = [
         (
             987_654_321u32,

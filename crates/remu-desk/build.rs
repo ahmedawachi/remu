@@ -1,14 +1,22 @@
 //! Embeds the icon and version metadata Windows reads out of an `.exe`.
 //!
-//! Without this the app is a generic-icon window in the taskbar and an
-//! unnamed row in Task Manager, and the SmartScreen prompt on first run has
-//! nothing to show but a filename — which is exactly the moment a user decides
-//! whether to trust the download.
+//! The icon is what Explorer, the zip and any shortcut show before Remu runs;
+//! the running window's own icon is set by the app itself, from the same mark.
+//! The version block is where Task Manager and the firewall prompt get the
+//! name "Remu" rather than a file name. It does not change what SmartScreen
+//! shows for an unsigned download — that is the file name and "Unknown
+//! publisher" either way, and only a code signature changes it.
 
 fn main() {
-    // The icon is the only input, so nothing else needs to re-run this.
+    // Declaring any of these replaces cargo's default of re-running on every
+    // change in the package, so each input has to be named: the icon, and the
+    // variables winresource reads to find a resource compiler. Cargo tracks
+    // the ones it sets itself, the package version among them.
     println!("cargo:rerun-if-changed=../../packaging/windows/remu.ico");
     println!("cargo:rerun-if-changed=build.rs");
+    for var in ["RC_PATH", "WINDRES", "CROSS_COMPILE", "AR"] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "windows" {
@@ -29,7 +37,9 @@ fn main() {
         .set("FileDescription", "Remu")
         .set("ProductName", "Remu")
         .set("OriginalFilename", "remu.exe")
-        .set("LegalCopyright", "MIT OR Apache-2.0");
+        // A copyright notice, as the field means and as LICENSE-MIT words it;
+        // the licence itself is in the files shipped beside the executable.
+        .set("LegalCopyright", "Copyright (c) 2026 The Remu contributors");
 
     if let Err(err) = resource.compile() {
         // Hard failure only where a resource compiler is genuinely expected: a

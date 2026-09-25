@@ -254,25 +254,35 @@ fn permissions(ui: &mut egui::Ui, state: &AppState, out: &mut Vec<Action>) {
             &state.permissions.accessibility,
         );
 
+        // One row per permission, request first: requesting is what puts Remu
+        // into the system list, so opening the list before it is empty.
         ui.add_space(space::SM);
-        ui.horizontal(|ui| {
-            if widgets::secondary_button(ui, palette, "Request accessibility", true).clicked() {
-                out.push(Action::RequestAccessibility);
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary_button(ui, palette, "Request screen recording", true).clicked() {
+                out.push(Action::RequestScreenRecording);
             }
-            if widgets::secondary_button(ui, palette, "Open settings", true).clicked() {
-                out.push(Action::OpenPrivacySettings(PrivacyPane::Accessibility));
+            if widgets::secondary_button(ui, palette, "Open screen-recording settings", true)
+                .clicked()
+            {
+                out.push(Action::OpenPrivacySettings(PrivacyPane::ScreenRecording));
             }
         });
         ui.add_space(space::XS);
-        if widgets::secondary_button(ui, palette, "Open screen-recording settings", true).clicked()
-        {
-            out.push(Action::OpenPrivacySettings(PrivacyPane::ScreenRecording));
-        }
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary_button(ui, palette, "Request accessibility", true).clicked() {
+                out.push(Action::RequestAccessibility);
+            }
+            if widgets::secondary_button(ui, palette, "Open accessibility settings", true).clicked()
+            {
+                out.push(Action::OpenPrivacySettings(PrivacyPane::Accessibility));
+            }
+        });
         widgets::hint(
             ui,
             palette,
-            "On macOS, grant Remu permission in System Settings → Privacy & Security → \
-             Accessibility and Screen Recording, then relaunch.",
+            "Only needed on the Mac whose screen is shared. On macOS, request each one and \
+             allow Remu in the list that opens; screen recording takes effect once Remu is \
+             quit and reopened.",
         );
     });
 }
