@@ -2,6 +2,19 @@
 **/*.rs.bk
 *.pdb
 
+# Release artifacts, assembled by packaging/ and uploaded by CI. The icon
+# master and the .ico cut from it are tracked; what is built out of them is not.
+/dist
+
+# What the snapshot tests write beside a baseline: the new image and the diff
+# when one disagrees, and the replaced baseline when UPDATE_SNAPSHOTS rewrites
+# it. The baselines are tracked; these are the evidence, not the record.
+crates/remu-desk/tests/snapshots/*.diff.png
+crates/remu-desk/tests/snapshots/*.new.png
+crates/remu-desk/tests/snapshots/*.old.png
+
+__pycache__/
+
 # Editor / OS noise
 .DS_Store
 .idea/

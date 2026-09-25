@@ -27,6 +27,26 @@ pub const TITLEBAR_INSET: f32 = 26.0;
 #[cfg(not(target_os = "macos"))]
 pub const TITLEBAR_INSET: f32 = 0.0;
 
+/// The icon the window, the taskbar and the macOS Dock show while Remu runs.
+///
+/// Giving eframe none is not the same as keeping the platform's own: it
+/// substitutes egui's logo, and pushes it over the icon in the `.exe`'s
+/// resources and in `Remu.app` for as long as the app is open. This is the
+/// same mark the Linux desktop entry ships, at 256 pixels, which is as large as
+/// any of those surfaces draws it.
+///
+/// A decoding failure is logged and answered with `None` — eframe's logo is a
+/// worse icon, not a reason to refuse to start.
+pub fn window_icon() -> Option<egui::IconData> {
+    match eframe::icon_data::from_png_bytes(include_bytes!("../../../docs/media/mark.png")) {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            tracing::error!(%err, "the embedded window icon did not decode; eframe will use its own");
+            None
+        }
+    }
+}
+
 pub const SIDEBAR_WIDTH: f32 = 236.0;
 pub const TOPBAR_HEIGHT: f32 = 52.0;
 pub const STATUSBAR_HEIGHT: f32 = 28.0;
@@ -42,6 +62,10 @@ pub struct DeskApp {
     styled_with: Palette,
     /// Relay, WebRTC and the media loops.
     engine: Runtime,
+    /// Whether the window had focus last frame. Permissions are re-read when
+    /// it comes back, because that is when someone returns from granting one
+    /// in the system settings.
+    focused: bool,
 }
 
 impl DeskApp {
@@ -75,13 +99,18 @@ impl DeskApp {
         let ctx = cc.egui_ctx.clone();
         let engine = Runtime::start(store.settings().clone(), move || ctx.request_repaint());
 
-        Self {
+        let mut app = Self {
             state,
             store,
             next_toast: 1,
             styled_with: palette,
             engine,
-        }
+            focused: true,
+        };
+        // Read once up front. Neither probe prompts, and without this the
+        // Settings pills say "unknown" until someone clicks a request button.
+        app.refresh_permissions();
+        app
     }
 
     /// Applies everything the engine has reported since the last frame.
@@ -274,6 +303,20 @@ impl DeskApp {
                 remu_input::permissions::request_accessibility();
                 self.refresh_permissions();
             }
+            Action::RequestScreenRecording => {
+                // The only call that adds Remu to the Screen Recording list at
+                // all. Without it the user is sent to a list that has nothing
+                // to switch on, and capture keeps failing with PermissionDenied.
+                let granted_now = remu_capture::request_permission();
+                self.refresh_permissions();
+                if !granted_now {
+                    self.toast(
+                        ToastKind::Info,
+                        "Allow Remu under Screen Recording, then quit and reopen it: \
+                         macOS applies the permission on the next launch.",
+                    );
+                }
+            }
             Action::OpenPrivacySettings(pane) => {
                 remu_input::permissions::open_privacy_settings(pane);
             }
@@ -364,9 +407,12 @@ impl DeskApp {
 
     fn refresh_permissions(&mut self) {
         use remu_input::permissions;
+        // Display, not Debug: the views match on "not required", and Debug of
+        // `NotRequired` lowercases to "notrequired", which they would show as
+        // an unrecognized grey pill on every Windows and Linux machine.
         self.state.permissions = crate::state::PermissionsUi {
-            screen_recording: format!("{:?}", permissions::screen_recording()).to_lowercase(),
-            accessibility: format!("{:?}", permissions::accessibility()).to_lowercase(),
+            screen_recording: permissions::screen_recording().to_string(),
+            accessibility: permissions::accessibility().to_string(),
         };
     }
 }
@@ -377,6 +423,12 @@ impl eframe::App for DeskApp {
         self.drain_engine(&ctx);
         let p = self.state.palette;
         self.state.prune_toasts(Instant::now());
+
+        let focused = ctx.input(|i| i.focused);
+        if focused && !self.focused {
+            self.refresh_permissions();
+        }
+        self.focused = focused;
 
         let mut out: Vec<Action> = Vec::new();
 
@@ -466,6 +518,17 @@ impl eframe::App for DeskApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_embedded_window_icon_decodes_to_an_opaque_square_mark() {
+        let icon = window_icon().expect("docs/media/mark.png decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        // The centre is the accent fill, never transparent: a blank or
+        // truncated image would still have the right dimensions.
+        let centre = ((128 * 256 + 128) * 4) as usize;
+        assert_eq!(icon.rgba[centre + 3], 255, "the mark's centre is opaque");
+    }
 
     #[test]
     fn chrome_heights_leave_room_for_content_at_the_minimum_window_size() {

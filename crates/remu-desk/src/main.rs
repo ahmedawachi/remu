@@ -19,6 +19,12 @@ fn main() -> eframe::Result<()> {
         .with_min_inner_size([880.0, 560.0])
         .with_app_id("dev.remu.desk")
         .with_title("Remu");
+    // Without one, eframe replaces the platform icon with egui's; see the
+    // function's docs.
+    let viewport = match remu_desk::app::window_icon() {
+        Some(icon) => viewport.with_icon(icon),
+        None => viewport,
+    };
 
     // On macOS the content runs under the title bar and the traffic lights
     // float over the sidebar, so the window reads as one dark surface instead

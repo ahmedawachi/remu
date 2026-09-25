@@ -169,10 +169,10 @@ pub fn open(
     backend::open(display_id, opts)
 }
 
-/// Whether this OS build has a usable capture API at all (macOS 12.3+,
-/// Windows 10 1803+, a PipeWire portal on Linux).
+/// Whether this OS build has a usable capture API at all (macOS 13.1+,
+/// Windows 10 2004+, a PipeWire portal on Linux).
 pub fn is_supported() -> bool {
-    scap::is_supported()
+    backend::supported()
 }
 
 /// Whether screen capture is permitted right now. Always true off macOS,

@@ -17,20 +17,32 @@ use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Rect, Stroke, Stro
 use egui_kittest::Harness;
 use remu_desk::theme::Palette;
 
-fn media_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is <repo>/crates/remu-desk.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/media")
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/media");
-            std::fs::create_dir_all(&dir).expect("create docs/media");
-            dir
-        })
+/// A directory in the repository, created if a checkout has not got it yet.
+///
+/// `CARGO_MANIFEST_DIR` is `<repo>/crates/remu-desk`, so every caller passes a
+/// path relative to that.
+fn repo_dir(relative: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create {relative}: {err}"));
+    dir.canonicalize().unwrap_or(dir)
 }
 
-/// Renders `draw` at `size` and writes it as a PNG.
+fn media_dir() -> PathBuf {
+    repo_dir("../../docs/media")
+}
+
+/// Renders `draw` at `size` and writes it as a PNG under `docs/media`.
 fn render(name: &str, size: egui::Vec2, draw: impl Fn(&egui::Painter, Rect) + Send + 'static) {
+    render_into(media_dir(), name, size, draw);
+}
+
+/// Renders `draw` at `size` and writes it as a PNG into `dir`.
+fn render_into(
+    dir: PathBuf,
+    name: &str,
+    size: egui::Vec2,
+    draw: impl Fn(&egui::Painter, Rect) + Send + 'static,
+) {
     let mut harness = Harness::builder().with_size(size).build_ui(move |ui| {
         remu_desk::fonts::install(ui.ctx());
         let rect = ui.max_rect();
@@ -40,8 +52,6 @@ fn render(name: &str, size: egui::Vec2, draw: impl Fn(&egui::Painter, Rect) + Se
     harness.run();
 
     let image = harness.render().expect("render the frame");
-    let dir = media_dir();
-    std::fs::create_dir_all(&dir).expect("create docs/media");
     let path = dir.join(format!("{name}.png"));
     image.save(&path).expect("write png");
     println!("wrote {}", path.display());
@@ -63,13 +73,17 @@ fn draw_mark(painter: &egui::Painter, rect: Rect, corner: u8) {
         rect.min + vec2(unit * 3.6, unit * 4.0),
         vec2(unit * 4.4, unit * 3.2),
     );
+    // The screens' own corners scale with the mark like everything else in it:
+    // 2 px at the README's 224 px, so the icon master is the same drawing
+    // rather than the same shape with sharper corners.
+    let screen_corner = CornerRadius::same((rect.width() / 112.0).round() as u8);
     painter.rect_stroke(
         far,
-        CornerRadius::same(2),
+        screen_corner,
         Stroke::new(unit * 0.42, Color32::from_white_alpha(150)),
         StrokeKind::Inside,
     );
-    painter.rect_filled(near, CornerRadius::same(2), Color32::WHITE);
+    painter.rect_filled(near, screen_corner, Color32::WHITE);
 }
 
 #[test]
@@ -78,6 +92,28 @@ fn mark() {
     render("mark", vec2(256.0, 256.0), |painter, rect| {
         draw_mark(painter, rect.shrink(8.0), 56);
     });
+}
+
+/// The master the platform icons are cut from.
+///
+/// 1024 is the largest slot macOS asks for and no `.icns` or `.ico` size is
+/// bigger, so the packaging scripts only ever scale it down. Rendering it
+/// rather than upscaling `mark.png` is the point: the mark is drawn, not a
+/// raster, so there is no reason for an app icon to be soft.
+#[test]
+#[ignore = "writes packaging/icons; run with --ignored to regenerate"]
+fn app_icon() {
+    render_into(
+        repo_dir("../../packaging/icons"),
+        "icon-1024",
+        vec2(1024.0, 1024.0),
+        |painter, rect| {
+            // Proportional to `mark` at four times the scale. The harness wraps
+            // every render in a fixed 8 px margin that does not scale, so the
+            // mark's 16 px inset (8 + 8) becomes 8 + 56 here, not 8 + 32.
+            draw_mark(painter, rect.shrink(56.0), 224);
+        },
+    );
 }
 
 #[test]

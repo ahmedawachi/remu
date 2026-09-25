@@ -31,6 +31,14 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 keyring = { version = "4.2.0", features = ["apple-native-keyring-store", "windows-native-keyring-store"] }
 
+[build-dependencies]
+# Not target-gated: a `[target.'cfg(...)'.build-dependencies]` entry is resolved
+# against the HOST, so gating it there would drop the crate exactly when
+# cross-compiling to Windows. build.rs checks the real target instead.
+# `toml` is the only default feature and would pull a parser in to read
+# metadata this build script sets explicitly.
+winresource = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 remu-relay = { path = "../remu-relay" }
 tokio = { workspace = true }

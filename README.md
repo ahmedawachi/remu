@@ -111,14 +111,19 @@ from keeping that sequence intact. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 
 
 - [Rust](https://rustup.rs) **1.85+** (`rustup` installs everything else)
 - A GPU or software adapter for `wgpu` — anything from the last decade
-- **Linux only:** `libxcb`, `libxrandr`, `libxi`, `libxtst`, `libgtk-3`, `libxkbcommon`
+- **Linux only:** PipeWire and D-Bus headers, `clang` for the bindings generated from them, and the
+  X11 and xkbcommon headers
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libxcb1-dev libxrandr-dev libxi-dev libxtst-dev libgtk-3-dev libxkbcommon-dev
+sudo apt install pkg-config clang libclang-dev libpipewire-0.3-dev libspa-0.2-dev libdbus-1-dev \
+  libxkbcommon-dev libxcb1-dev libxrandr-dev libxi-dev libxtst-dev
 ```
 
 ## Install
+
+Each tagged version publishes ready-to-run downloads for macOS, Windows and Linux on the GitHub
+Releases page, with first-run notes for each platform. To build from source instead:
 
 ```bash
 git clone https://github.com/ahmedawachi/remu
@@ -186,9 +191,13 @@ On a LAN that is all you need. **On the public internet, two things are not opti
 REMU_RELAY_TOKEN=$(openssl rand -hex 32) ./remu-relay --port 8765
 ```
 
-…and terminate TLS in front of it with Caddy or nginx so clients connect over `wss://`. A relay
-reachable from the internet without a token is an open directory of reachable desks — it will hand
-an ID to anyone who asks.
+A relay reachable from the internet without a token is an open directory of reachable desks — it
+will hand an ID to anyone who asks. Give every desk the same token under **Settings → Connection**.
+
+The desk app speaks plain `ws://` to the relay; it is built without TLS support, so a `wss://` URL
+does not connect. Signalling is therefore readable on the path — desk IDs, aliases, addresses and
+session set-up, never media or input, which are encrypted peer to peer. Until the client grows
+TLS, reach a remote relay over a VPN rather than exposing it on the open internet.
 
 <details>
 <summary><strong>All relay options</strong></summary>
@@ -200,9 +209,9 @@ Every flag has an environment variable, so a systemd unit or container needs no 
 | `--host` | `REMU_RELAY_HOST` | `0.0.0.0` | Bind address |
 | `--port` | `REMU_RELAY_PORT` | `8765` | Port |
 | `--token` | `REMU_RELAY_TOKEN` | *unset* | Shared secret required to register |
-| `--registrations-per-minute` | `REMU_RELAY_REGISTER_RATE` | `30` | Per-IP sustained rate; `0` disables |
-| `--registration-burst` | `REMU_RELAY_REGISTER_BURST` | `10` | Per-IP burst |
-| `--messages-per-second` | `REMU_RELAY_MESSAGE_RATE` | `50` | Per-IP sustained rate; `0` disables |
+| `--register-rate` | `REMU_RELAY_REGISTER_RATE` | `30` | Registrations per IP per minute; `0` disables |
+| `--register-burst` | `REMU_RELAY_REGISTER_BURST` | `10` | Per-IP burst |
+| `--message-rate` | `REMU_RELAY_MESSAGE_RATE` | `50` | Messages per IP per second; `0` disables |
 | `--message-burst` | `REMU_RELAY_MESSAGE_BURST` | `200` | Per-IP burst |
 | `--heartbeat-secs` | `REMU_RELAY_HEARTBEAT_SECS` | `20` | Keepalive ping interval |
 | `--pong-timeout-secs` | `REMU_RELAY_PONG_TIMEOUT_SECS` | `60` | Silence before a connection is dropped |
@@ -297,8 +306,8 @@ head-of-line blocked every mouse move behind it).
 
 | | Capture | Input | Notes |
 |---|---|---|---|
-| **macOS** | ScreenCaptureKit | CGEvent | Needs Screen Recording **and** Accessibility. Settings shows live status and links to the right pane. |
-| **Windows** | Windows.Graphics.Capture | SendInput | UAC may prompt the first time input is injected. |
+| **macOS** | ScreenCaptureKit | CGEvent | macOS 13.1+. The shared Mac needs Screen Recording **and** Accessibility; Settings requests both and shows live status. |
+| **Windows** | Windows.Graphics.Capture | SendInput | Windows 10 2004+. No permission to grant; input cannot reach elevated windows unless Remu is elevated too. |
 | **Linux** | PipeWire | XTest | Capture works on Wayland; **input injection needs X11** — the compositor blocks it otherwise. |
 
 Fonts come from the OS at runtime — SF Pro on macOS, Segoe UI on Windows, Inter/Cantarell/DejaVu on
@@ -321,9 +330,11 @@ Linux — so the app looks native and no proprietary font ships in the binary.
 <details>
 <summary><strong>macOS: the remote screen is black</strong></summary>
 
-Screen Recording permission is per-binary, and macOS caches the decision against the exact path. A
-rebuild into a new path needs re-granting. System Settings → Privacy & Security → Screen Recording,
-remove the entry, add it again, and relaunch.
+macOS records a Screen Recording grant against the app's code signature, and a build without a
+Developer ID signature is a new app to it every time — so an update or a rebuild silently loses the
+grant while System Settings still shows it switched on. In System Settings → Privacy & Security →
+Screen Recording, remove Remu with the minus button, then click **Request screen recording** in
+Remu's Settings and quit and reopen Remu.
 </details>
 
 <details>

@@ -12,6 +12,12 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 scap = { workspace = true }
 
+# The macOS version check scap gets wrong is done here instead; see
+# `backend::supported`. scap already depends on this exact line, so it adds
+# nothing to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+sysinfo = "0.30"
+
 [dev-dependencies]
 serde_json = { workspace = true }
 

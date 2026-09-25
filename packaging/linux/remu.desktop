@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Remu
+GenericName=Remote Desktop
+Comment=Share your screen and control another machine, peer to peer
+Exec=remu
+Icon=dev.remu.desk
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;screen;share;control;support;
+StartupNotify=true
+# The window is dev.remu.desk on both display servers. Wayland matches it to
+# this file by app id, so the file is installed as dev.remu.desk.desktop. On
+# X11 egui hands the same app id to winit as the window name, which winit
+# writes as the WM_CLASS class — its argv[0] fallback only applies when no name
+# is given.
+StartupWMClass=dev.remu.desk
