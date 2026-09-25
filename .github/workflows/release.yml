@@ -132,11 +132,11 @@ jobs:
           # profile, and on Windows with different RUSTFLAGS, so sharing ci.yml's
           # cache would only ever miss.
           shared-key: release-${{ matrix.name }}
-          # Restored by every run, written only by manual ones. What gets
-          # published is therefore never built on top of artefacts that only a
-          # release run produced, and the dry run — where packaging scripts are
-          # actually iterated on — is the thing that keeps the cache warm.
-          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+          # GitHub scopes a cache to the ref that saved it plus the default
+          # branch. So a pull request's dry run saves for its own next push, a
+          # manual run on main saves the cache later tag builds restore, and a
+          # tag build saves nothing, because no other run could ever read it.
+          save-if: ${{ github.event_name != 'push' }}
           # A packaging failure after a 20-minute compile should not throw the
           # compile away.
           cache-on-failure: true
@@ -165,9 +165,11 @@ jobs:
       - name: Build both Apple architectures
         if: runner.os == 'macOS'
         env:
-          # The minimum macOS that will load the binary. 12.3 is not a guess:
-          # ScreenCaptureKit arrived there, and capture is the application.
-          MACOSX_DEPLOYMENT_TARGET: "12.3"
+          # The minimum macOS that will load the binary, and it has to equal
+          # MIN_MACOS in bundle.sh, which refuses anything else. 13.1, not
+          # ScreenCaptureKit's 12.3: the capture bindings send selectors that
+          # only exist from 13.1 and panic below it.
+          MACOSX_DEPLOYMENT_TARGET: "13.1"
         run: |
           cargo build --release --target aarch64-apple-darwin -p remu-desk -p remu-relay
           cargo build --release --target x86_64-apple-darwin -p remu-desk -p remu-relay
@@ -186,10 +188,12 @@ jobs:
         run: cargo build --release -p remu-desk -p remu-relay
 
       # lipo, the .app tree, Info.plist, the icon, and the signature. Signing is
-      # the script's decision: with MACOS_SIGNING_IDENTITY it imports the
-      # certificate and notarises, without it the bundle is ad-hoc signed —
-      # which is not optional, since the kernel will not execute an unsigned
-      # arm64 binary at all.
+      # the script's decision, taken from which secrets exist: MACOS_CERTIFICATE
+      # is imported and signed with (MACOS_SIGNING_IDENTITY picks the identity
+      # when the certificate holds more than one), and APPLE_ID, APPLE_TEAM_ID
+      # and APPLE_APP_PASSWORD add notarisation. With none of them the bundle
+      # is ad-hoc signed — which is not optional, since the kernel will not
+      # execute an unsigned arm64 binary at all.
       - name: Package
         if: runner.os == 'macOS'
         env:
@@ -267,8 +271,10 @@ jobs:
       # each of which fails on the user's machine rather than here:
       #   - no Visual C++ runtime is needed, i.e. +crt-static reached every
       #     object, openh264's C++ and ring's C included;
-      #   - build.rs embedded the icon and version block, which it would skip
-      #     with only a warning if the resource compiler went missing;
+      #   - build.rs embedded the version block, and with it the icon: the two
+      #     are compiled from one resource script, so one cannot be present
+      #     without the other (build.rs itself fails the build on this runner
+      #     if the resource compiler does);
       #   - the statically linked binaries load at all.
       - name: Verify the Windows binaries
         if: runner.os == 'Windows'
@@ -317,15 +323,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist, "$stage/$desk", "$stage/$relay" | Out-Null
           Copy-Item target/release/remu.exe "$stage/$desk/"
           Copy-Item target/release/remu-relay.exe "$stage/$relay/"
-          # The first-run notes sit beside the exe under a name that sorts to
-          # the top, because the firewall prompt they explain is the one step
-          # that decides whether a first session works at all.
+          # First-run notes beside each exe, named so they are recognisably the
+          # thing to open first: the firewall prompt they explain is the one
+          # step that decides whether a first session works at all. The relay
+          # gets its own, because it is the one Windows binary that listens.
           Copy-Item packaging/windows/README.txt "$stage/$desk/Read Me.txt"
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE "$stage/$desk/"
+          Copy-Item packaging/windows/relay-README.txt "$stage/$relay/Read Me.txt"
           Copy-Item LICENSE-MIT, LICENSE-APACHE "$stage/$relay/"
 
           # Signing only removes a SmartScreen click-through; with no
-          # certificate the binaries still run, and the release notes say how.
+          # certificate the binaries still run, and the Read Me says how. This
+          # path takes a certificate that can be exported as a .pfx, such as one
+          # from a company's own certificate authority. A publicly trusted one
+          # issued since June 2023 lives on a hardware module and cannot be,
+          # and needs a cloud signing service wired in here instead.
           if ($env:WINDOWS_CERTIFICATE) {
             $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
             [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
@@ -364,8 +376,9 @@ jobs:
     name: checksums
     needs: build
     # Runs even when a platform failed, so the artefacts that did build are
-    # still downloadable and still checksummed.
-    if: ${{ !cancelled() }}
+    # still downloadable and still checksummed — but not when no build ran at
+    # all, which is what a failed version check leaves.
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -376,7 +389,13 @@ jobs:
       - name: Checksum every artefact
         run: |
           set -euo pipefail
+          # download-artifact makes no directory when there is nothing to fetch.
+          mkdir -p dist
           cd dist
+          # "Re-run failed jobs" downloads the checksums a previous attempt
+          # uploaded as well; hashing those into the new file would ship a sums
+          # file that lists a stale copy of itself.
+          rm -f SHA256SUMS SHA256SUMS.asc
           ls -l
           [ -n "$(ls -A)" ] || { echo "nothing was built" >&2; exit 1; }
           # Bare filenames only, so `sha256sum -c` works in whatever directory
@@ -434,70 +453,90 @@ jobs:
       # here: the draft is the owner's to complete, and GitHub's "Generate
       # release notes" button appends it in one click.
       - name: Write the install notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cat > notes.md <<'NOTES'
           ## Download
 
           | Machine | File |
           |---|---|
-          | macOS, Apple silicon or Intel | the `macos-universal.dmg` |
-          | Windows 10 or 11, 64-bit | the `windows-x86_64.zip` |
-          | Linux, 64-bit Intel or AMD (x86_64) | the `.AppImage` |
+          | macOS 13.1 or later, Apple silicon or Intel | `Remu-@VERSION@-macos-universal.dmg` |
+          | Windows 10 version 2004 or later, or Windows 11, 64-bit | `remu-@VERSION@-windows-x86_64.zip` |
+          | Linux x86_64: Ubuntu 24.04, Debian 13, Fedora 40 or newer, or current Arch | `Remu-@VERSION@-x86_64.AppImage` |
 
-          No installer, no admin rights, and nothing to install first.
+          There is no installer and nothing to install first. A few first-run steps on
+          macOS and Windows ask for an administrator's password; the Read Me inside each
+          download says which, and what to do on an account without one.
 
-          **macOS** — open the disk image, drag `Remu.app` into Applications, open it
-          from there. These builds
-          carry no Apple developer signature, so the first launch is refused: open
-          **System Settings → Privacy & Security**, find the line about Remu near the
-          bottom, click **Open Anyway**, and launch it again. Remu then needs **Screen
-          Recording** and **Accessibility** in that same panel, and has to be relaunched
-          after you grant them. If you would rather not click through it:
+          **macOS** — open the disk image, drag `Remu.app` into Applications and open it
+          from there. If macOS refuses the first launch, open **System Settings →
+          Privacy & Security**, click **Open Anyway** on the line about Remu, and confirm.
+          On macOS 15 and later, click **Allow** when Remu asks to find devices on your
+          local network — without it, it cannot reach a relay on that network. Only the
+          Mac whose screen is shared needs **Screen Recording** and **Accessibility**:
+          request both from Remu's **Settings → System permissions**, allow Remu in the
+          lists that open, then quit and reopen Remu. After installing a newer version,
+          remove Remu from both lists and grant them again; macOS ties them to one build.
+          The terminal alternative to Open Anyway:
 
           ```
-          xattr -dr com.apple.quarantine /Applications/Remu.app
+          xattr -cr /Applications/Remu.app
           ```
 
           **Windows** — unzip it somewhere permanent, not Downloads, and run `remu.exe`.
-          SmartScreen will say "Windows protected your PC" the first time: **More info →
-          Run anyway**. When your first session starts, Windows asks whether Remu may use
-          the network: tick the network type you are on and click **Allow access**. Do
-          not click Cancel — Windows then blocks it silently for good. The `Read Me.txt`
-          in the zip says how to undo that if it happens.
+          If SmartScreen says "Windows protected your PC", click **More info → Run
+          anyway**. When your first session starts, Windows asks whether Remu may use
+          the network: allow it on the network type you are on and approve the
+          administrator prompt. Do not click Cancel, which blocks it silently for good.
+          On a standard account an administrator has to allow it once; the `Read Me.txt`
+          in the zip gives the command, and how to undo a Cancel.
 
           **Linux** — make it executable and run it:
 
           ```
-          chmod +x Remu-*.AppImage && ./Remu-*.AppImage
+          chmod +x Remu-@VERSION@-x86_64.AppImage && ./Remu-@VERSION@-x86_64.AppImage
           ```
 
-          If your distribution has no FUSE, add `--appimage-extract-and-run`. The
-          `x86_64-linux.tar.gz` holds the same binary outside the bundle, for anyone
-          whose distribution fights AppImages. Either way the machine needs Ubuntu
-          24.04, Debian 13 or Fedora 40 or newer (or a current Arch), plus a GL or
-          Vulkan driver, pipewire and dbus — the last three deliberately not bundled,
-          because a copy inside the download would override the ones your system is
-          using.
-
-          On Wayland you can share your screen but cannot be controlled: the
-          compositor blocks synthetic input. Log into an X11 session if someone needs
-          to drive your machine.
+          If your distribution has no FUSE, add `--appimage-extract-and-run`.
+          `remu-@VERSION@-x86_64-linux.tar.gz` holds the same binary outside the bundle,
+          for anyone whose distribution fights AppImages. Either way the machine needs a
+          GL or Vulkan driver, pipewire and dbus — deliberately not bundled, because a
+          copy inside the download would override the ones your system is using. On
+          Wayland you can share your screen but cannot be controlled: the compositor
+          blocks synthetic input, so log into an X11 session if someone needs to drive
+          your machine.
 
           **Hosting a relay** — one person on the network runs `remu-relay`; everyone
-          else just needs the address it prints. It is in the `remu-relay-*` archive on
-          macOS and Windows, and beside `remu` inside the Linux tarball. Read the relay
-          section of the README first: one reachable from the internet without a token
-          is an open directory of reachable desks.
+          else only needs the address it prints. It is in
+          `remu-relay-@VERSION@-macos-universal.tar.gz` (and inside the disk image),
+          `remu-relay-@VERSION@-windows-x86_64.zip`, and beside `remu` in the Linux
+          tarball. It has first-run steps of its own: on macOS clear the download
+          quarantine with `xattr -c remu-relay`; on Windows the zip's `Read Me.txt`
+          covers SmartScreen and the firewall rule it needs to accept connections.
+          Keep it on your own network: the desk app talks to it over plain `ws://`, so
+          one reachable from the internet needs a token at the very least, and belongs
+          behind a VPN. The README's relay section has the details.
 
           ## Verify what you downloaded
 
-          `SHA256SUMS` covers every file here.
+          `SHA256SUMS` lists every file here; these check only the ones you downloaded.
 
           ```
           shasum -a 256 -c --ignore-missing SHA256SUMS   # macOS
           sha256sum -c --ignore-missing SHA256SUMS       # Linux
           ```
+
+          On Windows, compare `(Get-FileHash .\remu-@VERSION@-windows-x86_64.zip).Hash`
+          in PowerShell with that file's line in `SHA256SUMS`. When the release also
+          carries `SHA256SUMS.asc`, that is a detached GPG signature over `SHA256SUMS`.
           NOTES
+          # Quoted heredoc so nothing in the Markdown is expanded by the shell;
+          # the version goes in afterwards, and it is only digits and dots here
+          # because the version job checked the tag against Cargo.toml.
+          sed -i "s/@VERSION@/$VERSION/g" notes.md
+          grep -q '@VERSION@' notes.md && { echo "unreplaced @VERSION@ in the notes" >&2; exit 1; }
+          cat notes.md
 
       # gh, not a third-party action: it is already on the runner, and the token
       # that can write releases stays out of code nobody here reviews.
@@ -510,12 +549,20 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          # Idempotent: a re-run after a fixed packaging script re-uploads into
-          # the draft that already exists instead of failing on it.
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --draft \
-            --verify-tag \
-            --title "Remu $VERSION" \
-            --notes-file notes.md
+          # Idempotent for a draft: a re-run after a fixed packaging script
+          # re-uploads into the draft that already exists. Never for a release
+          # someone has published — replacing its files is not this job's call.
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "$TAG is already published; not touching its files" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Remu $VERSION" \
+              --notes-file notes.md
+          fi
           gh release upload "$TAG" dist/* --clobber
           gh release view "$TAG" --json url --jq .url

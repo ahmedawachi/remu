@@ -1,14 +1,17 @@
 Remu for macOS
 ==============
 
-Drag Remu.app to the Applications folder, then open it from there.
+Needs macOS 13.1 or later, on an Apple silicon or Intel Mac.
+
+Drag Remu.app onto the Applications folder, then open it from there. On a
+standard (non-administrator) account the Applications folder asks for an
+administrator's password; dragging Remu into an "Applications" folder in your
+home folder instead works without one.
 
 First open
 ----------
-This build carries no Apple developer signature, so macOS refuses the first
-launch with "Apple could not verify Remu is free of malware", offering only
-Done or Move to Trash.
-
+If this build is not notarised by Apple, macOS refuses the first launch with
+"Apple could not verify Remu is free of malware" or "Remu can't be opened".
 To open it anyway:
 
   1. Double-click Remu once and dismiss the refusal.
@@ -16,42 +19,63 @@ To open it anyway:
      line about Remu having been blocked, with an "Open Anyway" button.
   3. Click it, authenticate, and confirm "Open Anyway" once more.
 
-macOS remembers the decision and every later launch is normal. Control-clicking
-and choosing Open is not a way around this on macOS 15 or newer, whatever older
-advice says. The one-line equivalent, if you would rather use a terminal:
+macOS remembers that for this version of Remu. Control-clicking and choosing
+Open no longer works on macOS 15 or newer. The equivalent in a terminal:
 
-  xattr -dr com.apple.quarantine /Applications/Remu.app
+  xattr -cr /Applications/Remu.app
+
+Local network
+-------------
+On macOS 15 and later, the first time Remu connects to the relay, macOS asks
+whether it may "find devices on local networks". Click Allow. If you click
+Don't Allow, Remu cannot reach a relay or another desk on your network at all;
+turn it back on under System Settings > Privacy & Security > Local Network.
 
 Permissions
 -----------
-Remu needs two permissions, and only on the machine whose screen is being
-shared. Neither is needed to view someone else's screen.
+Only the Mac whose screen is being shared needs these two. Viewing someone
+else's screen needs neither.
 
-  Screen Recording   to capture the screen
-  Accessibility      to let the other side use your keyboard and mouse
+  Screen Recording   to capture this screen
+  Accessibility      to let the other side use this keyboard and mouse
 
-Grant them in System Settings > Privacy & Security, then quit and reopen Remu.
-macOS only hands screen-recording permission to an application on its next
-launch, so the restart is required rather than optional. Both permissions are
-tied to where the app lives, so grant them after moving it to Applications,
-not before.
+In Remu, open Settings and scroll to System permissions. Click "Request screen
+recording" and allow Remu in the list that opens, then do the same with
+"Request accessibility". Then quit Remu (Remu > Quit, or Cmd-Q) and open it
+again: macOS only hands screen recording to an app when it next starts. The
+two status pills turn green once each permission is in effect.
+
+Both permissions, and the Open Anyway decision, belong to this exact build.
+After installing a newer version, macOS may still show Remu switched on in
+both lists while no longer honouring it. Select Remu in each list, remove it
+with the minus button, then request both again from Remu's Settings.
 
 Connecting
 ----------
-Open Settings, put the relay address you were given into "Relay server URL",
-click "Save settings", then "Reconnect relay". Your nine-digit desk ID appears
-at the top right once the relay answers; the bottom bar shows the relay you are
-pointed at and whether the connection is up.
+Open Settings, put the relay address you were given into "Relay server URL"
+and click "Save settings". Your nine-digit desk ID appears at the top right
+once the relay answers; the bottom bar shows the relay you are pointed at and
+whether the connection is up.
 
 To view another desk, type its nine digits under "Remote Desk" and press
 Connect. The other machine has to accept before anything is shared.
 
 remu-relay
 ----------
-The disk image also carries remu-relay, the server two desks use to find each
-other. Only one person on the network runs it:
+The disk image also carries remu-relay, the small server two desks use to find
+each other. Only one person on the network runs it. Copy it out of the disk
+image, clear the download quarantine macOS puts on it, and start it:
 
-  ./remu-relay
+  cp /Volumes/Remu/remu-relay ~/
+  xattr -c ~/remu-relay
+  ~/remu-relay
 
-It prints the address to give everyone else. Nothing about a session travels
-through it in readable form.
+It normally prints the address to give everyone else, on a line starting
+"LAN:". If it prints only a localhost address, use this Mac's IP address from
+System Settings > Network instead, as ws://<that address>:8765. If the macOS
+firewall is on, allow remu-relay to accept incoming connections when asked.
+
+The relay only introduces two desks to each other. It sees their IDs and
+names, their network addresses, and the messages that set a session up. The
+screen, keyboard, mouse, files and chat never pass through it: they travel
+directly between the two machines, encrypted.

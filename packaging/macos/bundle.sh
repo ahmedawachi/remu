@@ -24,8 +24,10 @@
 # With none of them set everything is ad-hoc signed. That is not a trust claim
 # and Gatekeeper still stops the first launch, but it is what makes the binary
 # executable at all on Apple silicon, where the kernel refuses to run unsigned
-# code, and it gives TCC one identity to hang the Screen Recording and
-# Accessibility grants on instead of re-asking after every rebuild.
+# code. It is also an identity for one build only: an ad-hoc signature's
+# designated requirement is the binary's cdhash, so every rebuild is a new
+# app to TCC and to Gatekeeper, and the Screen Recording and Accessibility
+# grants do not survive an update. Only a Developer ID signature keeps them.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -34,8 +36,11 @@ readonly ARM=aarch64-apple-darwin
 readonly INTEL=x86_64-apple-darwin
 readonly BUNDLE_ID=dev.remu.desk
 readonly RELAY_ID=dev.remu.relay
-# ScreenCaptureKit, which the capture backend is built on, arrived in 12.3.
-readonly MIN_MACOS=12.3
+# Not ScreenCaptureKit's own 12.3: the bindings the capture backend uses send
+# SCWindow.isActive (13.1) and SCStreamConfiguration.capturesAudio (13.0)
+# unconditionally, and on anything older that is a panic, not a missing
+# feature. See MIN_MACOS in crates/remu-capture/src/backend.rs.
+readonly MIN_MACOS=13.1
 readonly APP=target/macos/Remu.app
 readonly DIST=dist
 
@@ -47,16 +52,18 @@ WORK=$(mktemp -d)
 KEYCHAIN=
 KEYCHAIN_LIST=
 cleanup() {
-  # The signing keychain is put *in front of* the user's search list, so a run
-  # that dies between import and delete would otherwise leave a developer's
-  # login keychain out of the list for the rest of the session.
+  # Puts the search list back as it was before the throwaway keychain was added
+  # to the front of it, so a run that dies between import and delete leaves no
+  # reference to a keychain that is about to stop existing.
   if [ -n "$KEYCHAIN_LIST" ]; then
     # Intentionally unquoted: the saved list is several paths.
     # shellcheck disable=SC2086
     security list-keychains -d user -s $KEYCHAIN_LIST >/dev/null 2>&1 || true
   fi
-  [ -n "$KEYCHAIN" ] && security delete-keychain "$KEYCHAIN" 2>/dev/null
-  rm -rf "$WORK"
+  # errexit is still in force inside an EXIT trap, so each step has to be
+  # unable to fail, or one failure would skip the rest of the cleanup.
+  [ -z "$KEYCHAIN" ] || security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+  rm -rf "$WORK" || true
   return 0
 }
 trap cleanup EXIT
@@ -81,9 +88,8 @@ case "${1:-}" in
     # stable the machine also has, because that pin is what CI compiled with.
     rustup target add "$ARM" "$INTEL"
     # Exported here rather than trusted to the caller: without it rustc records
-    # macOS 11.0 for arm64 and 10.12 for x86_64, and a binary that weak-links
-    # ScreenCaptureKit while claiming to run on 10.12 launches on Macs that
-    # cannot capture anything and crashes in a framework call instead.
+    # macOS 11.0 for arm64 and 10.12 for x86_64, a floor that contradicts the
+    # LSMinimumSystemVersion in Info.plist and that the check below rejects.
     export MACOSX_DEPLOYMENT_TARGET=$MIN_MACOS
     # MACOSX_DEPLOYMENT_TARGET is not part of cargo's fingerprint for a Rust
     # unit, so a cache that already holds these two binaries hands them back
@@ -180,6 +186,7 @@ lipo -create -output "$RELAY/remu-relay" \
   "target/$ARM/release/remu-relay" "target/$INTEL/release/remu-relay"
 chmod +x "$RELAY/remu-relay"
 cp LICENSE-MIT LICENSE-APACHE "$RELAY/"
+cp packaging/macos/relay-README.txt "$RELAY/Read Me.txt"
 
 note "$(lipo -archs "$APP/Contents/MacOS/remu")"
 
@@ -244,18 +251,42 @@ fi
 
 codesign --verify --strict --verbose=2 "$APP"
 codesign --verify --strict "$RELAY/remu-relay"
-# The one thing that can be executed on this machine without a display: proves
-# the universal binary loads and that the signature it just got is accepted by
-# the kernel.
-"$RELAY/remu-relay" --help >/dev/null || die "the signed relay binary will not run"
+# The relay is the one binary that runs without a display, so it is what
+# proves each slice of a universal build loads and that the signature it just
+# got is accepted. Both slices, named explicitly: a plain run exercises only
+# the machine's own architecture, and on Apple silicon the Intel slice needs
+# Rosetta to run at all.
+ran=
+for slice in arm64 x86_64; do
+  if arch -"$slice" /usr/bin/true 2>/dev/null; then
+    arch -"$slice" "$RELAY/remu-relay" --help >/dev/null ||
+      die "the $slice slice of the signed relay will not run"
+    ran="$ran $slice"
+  else
+    note "this machine cannot run $slice code: that slice was built and signed but not run"
+  fi
+done
+[ -n "$ran" ] || die "neither slice of the signed relay could be run here"
+note "signed relay runs on:$ran"
 
 # --- notarisation ------------------------------------------------------------
 
 notarise() {
+  # The verdict is read from the result, not the exit status: notarytool exits
+  # 0 once Apple returns any final answer, Invalid included, and a rejection
+  # would otherwise surface a step later as stapler's unhelpful "Record not
+  # found".
+  local result=$WORK/notary.plist status id
   xcrun notarytool submit "$1" \
     --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_PASSWORD" --wait --timeout 30m ||
-    die "notarisation was rejected; 'xcrun notarytool log <the id above>' says why"
+    --password "$APPLE_APP_PASSWORD" --wait --timeout 30m \
+    --output-format plist >"$result" ||
+    die "notarytool could not submit $1, or gave up waiting for Apple's answer"
+  status=$(plutil -extract status raw "$result" 2>/dev/null || echo unknown)
+  id=$(plutil -extract id raw "$result" 2>/dev/null || echo unknown)
+  [ "$status" = Accepted ] ||
+    die "notarisation of $1 ended '$status'. Apple's reasons: xcrun notarytool log $id --apple-id <Apple ID> --team-id <team> --password <app-specific password>"
+  note "notarised: $(basename "$1") ($id)"
 }
 
 NOTARISE=false
@@ -291,13 +322,32 @@ mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/Remu.app"
 ditto "$RELAY/remu-relay" "$STAGE/remu-relay"
 cp packaging/macos/README.txt "$STAGE/Read Me.txt"
-# The drag target. This is why a disk image rather than a zip: unzipping leaves
-# the app in Downloads, and both permissions Remu needs are remembered against
-# where the app was when they were granted.
+# The drag target. This is why a disk image rather than a zip: an app launched
+# from where a browser unpacked it is quarantined and runs translocated, from a
+# random read-only path, every time until someone moves it; the image makes
+# moving it the obvious first step.
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
-hdiutil create -volname Remu -srcfolder "$STAGE" -fs HFS+ \
-  -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null
+# Retried because hdiutil on hosted macOS runners fails now and then with
+# "Resource busy", a known image-level flake, and one of those should not
+# throw away a twenty-minute build.
+for attempt in 1 2 3 4; do
+  if hdiutil create -volname Remu -srcfolder "$STAGE" -fs HFS+ \
+    -format UDZO -imagekey zlib-level=9 -ov "$DMG" >/dev/null; then
+    break
+  fi
+  [ "$attempt" -lt 4 ] || die "hdiutil could not create the disk image after four attempts"
+  note "hdiutil failed, retrying (attempt $attempt of 4)"
+  sleep $((attempt * 5))
+done
+
+if [ -n "$IDENTITY" ]; then
+  # Apple's procedure signs the image itself, with an identifier distinct from
+  # the bundle's: an unsigned image gets a ticket for its contents only, which
+  # is not the file the user downloads.
+  codesign --force --timestamp --identifier "$BUNDLE_ID.dmg" --sign "$IDENTITY" "$DMG"
+  codesign --verify --strict "$DMG"
+fi
 
 if [ "$NOTARISE" = true ]; then
   step "Notarising the disk image"
@@ -336,6 +386,6 @@ else
       3. System Settings > Privacy & Security > "Open Anyway" (Touch ID), then
          Open Anyway once more
     Control-clicking Open has not been a way around this since macOS 15.
-    The one-line alternative: xattr -dr com.apple.quarantine /Applications/Remu.app
+    The one-line alternative: xattr -cr /Applications/Remu.app
 FIRSTRUN
 fi

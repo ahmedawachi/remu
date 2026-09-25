@@ -8,17 +8,22 @@
   There is no usage-description string for screen recording or accessibility
   because macOS has no such key for either: both alerts are worded by the
   system, and no Info.plist entry can change them or pre-request them. What
-  those two permissions do need is this bundle. TCC stores a grant against an
-  application identity — bundle identifier plus code signature — so a signed
-  bundle keeps its grant, while a bare binary launched from a terminal has no
-  identity of its own and the grant lands on the terminal instead.
+  those two permissions do need is this bundle. TCC stores a grant against the
+  application's designated requirement, and a bare binary launched from a
+  terminal has none of its own, so the grant lands on the terminal instead.
+  With a Developer ID signature the requirement is the team and bundle
+  identifier, and a grant survives updates; with the ad-hoc signature an
+  unconfigured build gets, it is that build's cdhash, and every new version
+  has to be granted again.
 
   Local Network is the opposite case: it is honoured from macOS 15 on, and Remu
-  trips it the first time WebRTC tries a direct route to a peer on the same
-  network, so the string is here to explain that before the alert appears.
+  trips it on its first connection to any address on the local network, which
+  is usually the relay. Denying it blocks that connection outright, so the
+  string says so rather than suggesting anything still works without it.
 
-  LSMinimumSystemVersion tracks ScreenCaptureKit (macOS 12.3), which the capture
-  backend is built on; below that the app has nothing to capture with.
+  LSMinimumSystemVersion is 13.1, not ScreenCaptureKit's 12.3: the bindings the
+  capture backend uses send selectors that only exist from 13.1, and below that
+  they panic. See MIN_MACOS in crates/remu-capture/src/backend.rs.
 -->
 <plist version="1.0">
 <dict>
@@ -47,11 +52,11 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>12.3</string>
+	<string>13.1</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Remu connects straight to the other machine when it is on the same network. Without this the session has to travel through a relay, which is slower.</string>
+	<string>Remu uses your local network to reach the relay and the other computer. Without it, Remu cannot connect to anything on this network.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSRequiresAquaSystemAppearance</key>
